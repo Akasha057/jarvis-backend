@@ -5,35 +5,59 @@
     <title>JARVIS Interface</title>
     <style>
         body { background: #000; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
-        button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; }
+        button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; }
+        button:hover { background: #004444; }
+        #status { margin-top: 20px; font-size: 18px; }
     </style>
 </head>
 <body>
     <h1>JARVIS</h1>
     <button id="start-btn">🎙️ ACTIVAR MODO VOZ</button>
-    <p id="status"></p>
+    <p id="status">Esperando comandos...</p>
 
     <script>
         const btn = document.getElementById('start-btn');
         const status = document.getElementById('status');
-        const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
         
-        recognition.lang = 'es-ES';
-        btn.onclick = () => recognition.start();
-
-        recognition.onresult = async (event) => {
-            const transcript = event.results[0][0].transcript;
-            status.innerText = "Procesando: " + transcript;
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            status.innerText = "Tu navegador no soporta reconocimiento de voz. Usa Google Chrome.";
+        } else {
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'es-ES';
             
-            // Aquí enviamos el texto a tu backend
-            const response = await fetch('/procesar', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({text: transcript})
-            });
-            const data = await response.json();
-            // Lógica para reproducir el audio de ElevenLabs que devuelva tu API
-        };
+            btn.onclick = () => {
+                recognition.start();
+                status.innerText = "Escuchando...";
+            };
+
+            recognition.onresult = async (event) => {
+                const transcript = event.results[0][0].transcript;
+                status.innerText = "Procesando: " + transcript;
+                
+                try {
+                    const response = await fetch('/procesar', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: transcript})
+                    });
+                    const data = await response.json();
+                    
+                    if(data.status === "ok") {
+                        status.innerText = "JARVIS: " + data.respuesta_texto;
+                        
+                        // Sintetizamos la voz localmente en el navegador como respaldo inmediato
+                        const utterance = new SpeechSynthesisUtterance(data.respuesta_texto);
+                        utterance.lang = 'es-ES';
+                        window.speechSynthesis.speak(utterance);
+                    } else {
+                        status.innerText = "Error: " + data.message;
+                    }
+                } catch (err) {
+                    status.innerText = "Error de conexión con el servidor.";
+                }
+            };
+        }
     </script>
 </body>
 </html>
