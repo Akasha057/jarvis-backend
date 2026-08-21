@@ -15,9 +15,10 @@ from elevenlabs import ElevenLabs
 app = FastAPI()
 
 # Configuración de credenciales y APIs
+# Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-SHEET_ID = os.getenv("SHEET_ID", "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU")
-FOLDER_ID = "TU_FOLDER_ID_ACA"  # Reemplaza con el ID de tu carpeta en Google Drive
+SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
+FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
 # Inicializar Gemini y ElevenLabs (asegurate de tener tus API keys en las variables de entorno de Render)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
