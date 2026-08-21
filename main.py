@@ -9,19 +9,18 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 from pydub import AudioSegment
-import google.generativeai as genai
+from google import genai
 from elevenlabs import ElevenLabs
 
 app = FastAPI()
 
-# Configuración de credenciales y APIs
 # Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Inicializar Gemini y ElevenLabs (asegurate de tener tus API keys en las variables de entorno de Render)
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Inicializar cliente de Gemini (google-genai) y ElevenLabs
+ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 class PromptRequest(BaseModel):
@@ -50,7 +49,7 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
         audio_wav.export(wav_io, format="wav")
         wav_io.seek(0)
         
-        # 2. Subir el archivo WAV a Google Drive usando MediaInMemoryUpload
+        # 2. Subir el archivo WAV a Google Drive
         drive_service = build('drive', 'v3', credentials=creds)
         file_metadata = {
             'name': f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav',
@@ -121,6 +120,12 @@ def home():
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({text: transcript})
                         });
+                        
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.detail || "Error desconocido en el servidor");
+                        }
+                        
                         const data = await response.json();
                         
                         if(data.status === "ok") {
@@ -132,10 +137,11 @@ def home():
                                 audio.play().catch(e => console.log("Error al reproducir audio:", e));
                             }
                         } else {
-                            status.innerText = "Error: " + data.message;
+                            status.innerText = "Error: " + (data.message || "Respuesta inválida");
                         }
                     } catch (err) {
-                        status.innerText = "Error de conexión con el servidor.";
+                        status.innerText = "Error: " + err.message;
+                        console.error(err);
                     }
                 };
             }
@@ -149,28 +155,30 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # 1. Generar respuesta con Gemini (manteniendo el rol técnico de JARVIS)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction="Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
+        # 1. Generar respuesta con el nuevo SDK de Gemini (google-genai)
+        response = ai_client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=user_text,
+            config={
+                "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
+            }
         )
-        response = model.generate_content(user_text)
         respuesta_texto = response.text
 
         # 2. Generar audio con ElevenLabs
         audio_stream = eleven_client.text_to_speech.convert(
             text=respuesta_texto,
-            voice_id="JBFqnCBsd6RMkjVDRZzb", # Reemplazá con tu voice ID si usas una específica
+            voice_id="JBFqnCBsd6RMkjVDRZzb",
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128"
         )
         
         audio_bytes = b"".join(chunk for chunk in audio_stream)
         
-        # 3. Guardar en Google Drive (.wav) y registrar en Google Sheets de forma asíncrona o directa
+        # 3. Guardar en Google Drive (.wav) y registrar en Google Sheets
         guardar_en_sheets_y_drive(user_text, audio_bytes)
         
-        # 4. Retornar respuesta a la interfaz en base64 para reproducción inmediata
+        # 4. Retornar respuesta a la interfaz en base64
         import base64
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
@@ -181,4 +189,5 @@ def procesar(payload: PromptRequest):
         }
         
     except Exception as e:
+        print(f"❌ Error en /procesar: {e}")
         raise HTTPException(status_code=500, detail=str(e))
