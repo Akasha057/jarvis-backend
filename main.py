@@ -2,11 +2,19 @@ import os
 import json
 import tempfile
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 app = FastAPI()
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def get_index():
+    return FileResponse("static/index.html")
 
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
