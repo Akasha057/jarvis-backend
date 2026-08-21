@@ -60,7 +60,7 @@ async def procesar(request: Request):
             return {"status": "error", "message": "No se recibió texto."}
 
         # 1. Gemini (usando el modelo flash actual)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-3.6-flash')
         response_gemini = model.generate_content(texto_usuario)
         texto_respuesta = response_gemini.text
 
