@@ -12,13 +12,12 @@ from googleapiclient.http import MediaFileUpload
 import google.generativeai as genai
 from elevenlabs.client import ElevenLabs
 
-# Inicialización
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Cargamos ElevenLabs
+# Configuración de ElevenLabs
 eleven_api_key = os.getenv("ELEVENLABS_API_KEY")
 eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
 client_eleven = ElevenLabs(api_key=eleven_api_key) if eleven_api_key else None
@@ -33,38 +32,40 @@ async def procesar(request: Request):
         if not client_eleven:
             return {"status": "error", "message": "Falta configurar la API Key de ElevenLabs en Render."}
 
-        # Procesamos la variable GEMINI_API_KEYS
+        # Procesamos la lista de llaves de Render (maneja formato JSON o texto separado por comas/saltos de línea)
         raw_keys = os.getenv("GEMINI_API_KEYS", "")
         if not raw_keys:
-            return {"status": "error", "message": "No se encontraron llaves en Render."}
+            return {"status": "error", "message": "No se encontraron API Keys de Gemini en Render."}
 
         try:
             if raw_keys.startswith("["):
                 lista_gemini_keys = json.loads(raw_keys)
             else:
-                lista_gemini_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+                lista_gemini_keys = [k.strip() for k in raw_keys.replace('"', '').replace("'", "").split(",") if k.strip()]
         except Exception:
-            lista_gemini_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+            lista_gemini_keys = [k.strip() for k in raw_keys.replace('"', '').replace("'", "").split(",") if k.strip()]
 
         if not lista_gemini_keys:
-            return {"status": "error", "message": "La lista de llaves está vacía."}
+            return {"status": "error", "message": "La lista de API Keys de Gemini está vacía."}
 
-        # Seleccionamos una llave al azar y configuramos genai clásico
+        # Seleccionamos una llave al azar y configuramos genai
         api_key_actual = random.choice(lista_gemini_keys)
         genai.configure(api_key=api_key_actual)
-
+        
+        # Inicializamos el modelo 3.6-flash
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        
         data = await request.json()
         texto_usuario = data.get("text", "")
         
         if not texto_usuario:
             return {"status": "error", "message": "No se recibió texto."}
 
-        # 1. Gemini (usando el modelo flash actual)
-        model = genai.GenerativeModel('gemini-3.6-flash')
-        response_gemini = model.generate_content(texto_usuario)
-        texto_respuesta = response_gemini.text
+        # 1. Respuesta de Gemini
+        response = model.generate_content(texto_usuario)
+        texto_respuesta = response.text
 
-        # 2. ElevenLabs
+        # 2. Generación de Audio con ElevenLabs
         audio_generator = client_eleven.text_to_speech.convert(
             text=texto_respuesta,
             voice_id=eleven_voice_id,
@@ -79,7 +80,7 @@ async def procesar(request: Request):
             for chunk in audio_generator:
                 f.write(chunk)
 
-        # 3. Google Drive
+        # 3. Resguardo en Google Drive
         subir_audio_a_drive(ruta_temporal, nombre_archivo)
         
         if os.path.exists(ruta_temporal):
