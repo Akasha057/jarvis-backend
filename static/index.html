@@ -46,10 +46,11 @@
                     if(data.status === "ok") {
                         status.innerText = "JARVIS: " + data.respuesta_texto;
                         
-                        // Sintetizamos la voz localmente en el navegador como respaldo inmediato
-                        const utterance = new SpeechSynthesisUtterance(data.respuesta_texto);
-                        utterance.lang = 'es-ES';
-                        window.speechSynthesis.speak(utterance);
+                        // Reproducimos la voz real de ElevenLabs desde el archivo generado
+                        if(data.audio_url) {
+                            const audio = new Audio(data.audio_url);
+                            audio.play().catch(e => console.log("Error al reproducir audio:", e));
+                        }
                     } else {
                         status.innerText = "Error: " + data.message;
                     }
