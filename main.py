@@ -20,12 +20,55 @@ CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Inicializar cliente de Gemini y ElevenLabs
-ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Cargar la lista de keys desde la variable de entorno (puede estar en formato JSON de lista o separadas por comas)
+raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
+try:
+    if raw_keys.startswith("["):
+        GEMINI_KEYS = json.loads(raw_keys)
+    else:
+        GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+except Exception:
+    GEMINI_KEYS = []
+
+# Si por casualidad configuraste una sola en singular, la agregamos también
+single_key = os.getenv("GEMINI_API_KEY")
+if single_key and single_key not in GEMINI_KEYS:
+    GEMINI_KEYS.insert(0, single_key)
+
+if not GEMINI_KEYS:
+    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas en GEMINI_API_KEYS.")
+
+# Inicializar ElevenLabs
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 class PromptRequest(BaseModel):
     text: str
+
+def generar_respuesta_con_fallback(user_text: str) -> str:
+    """Intenta generar la respuesta rotando entre las API keys disponibles si una falla."""
+    if not GEMINI_KEYS:
+        raise ValueError("No hay API keys de Gemini disponibles.")
+
+    ultimo_error = None
+    for api_key in GEMINI_KEYS:
+        try:
+            # Inicializamos el cliente de Gemini con la key actual del loop
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=user_text,
+                config={
+                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
+                }
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            print(f"⚠️ Una API key falló o se quedó sin cuota. Probando la siguiente... Error: {e}")
+            ultimo_error = e
+            continue
+            
+    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
     try:
@@ -154,15 +197,8 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # 1. Generar respuesta con Gemini
-        response = ai_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=user_text,
-            config={
-                "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
-            }
-        )
-        respuesta_texto = response.text
+        # 1. Generar respuesta con Gemini aplicando el sistema de respaldos (fallback)
+        respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs usando tu Voice ID
         audio_stream = eleven_client.text_to_speech.convert(
