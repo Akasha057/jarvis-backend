@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>JARVIS Interface</title>
+    <style>
+        body { background: #000; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
+        button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>JARVIS</h1>
+    <button id="start-btn">🎙️ ACTIVAR MODO VOZ</button>
+    <p id="status"></p>
+
+    <script>
+        const btn = document.getElementById('start-btn');
+        const status = document.getElementById('status');
+        const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+        
+        recognition.lang = 'es-ES';
+        btn.onclick = () => recognition.start();
+
+        recognition.onresult = async (event) => {
+            const transcript = event.results[0][0].transcript;
+            status.innerText = "Procesando: " + transcript;
+            
+            // Aquí enviamos el texto a tu backend
+            const response = await fetch('/procesar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text: transcript})
+            });
+            const data = await response.json();
+            // Lógica para reproducir el audio de ElevenLabs que devuelva tu API
+        };
+    </script>
+</body>
+</html>
