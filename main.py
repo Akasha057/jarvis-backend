@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import io
+import base64
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -19,7 +20,7 @@ CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Inicializar cliente de Gemini (google-genai) y ElevenLabs
+# Inicializar cliente de Gemini y ElevenLabs
 ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
@@ -41,7 +42,7 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
             ]
         )
         
-        # 1. Convertir MP3 de ElevenLabs a WAV (44.1kHz, Mono) para Applio
+        # 1. Convertir MP3 de ElevenLabs a WAV (44.1kHz, Mono)
         audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
         audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
         
@@ -56,9 +57,7 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
             'parents': [FOLDER_ID]
         }
         
-        wav_bytes_data = wav_io.getvalue()
-        media = MediaInMemoryUpload(wav_bytes_data, mimetype='audio/wav')
-        
+        media = MediaInMemoryUpload(wav_io.getvalue(), mimetype='audio/wav')
         file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         
         # 3. Registrar los datos en Google Sheets
@@ -155,7 +154,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # 1. Generar respuesta con el nuevo SDK de Gemini (google-genai)
+        # 1. Generar respuesta con Gemini
         response = ai_client.models.generate_content(
             model="gemini-1.5-flash",
             contents=user_text,
@@ -165,21 +164,20 @@ def procesar(payload: PromptRequest):
         )
         respuesta_texto = response.text
 
-        # 2. Generar audio con ElevenLabs
+        # 2. Generar audio con ElevenLabs usando tu Voice ID
         audio_stream = eleven_client.text_to_speech.convert(
             text=respuesta_texto,
-            voice_id="JBFqnCBsd6RMkjVDRZzb",
+            voice_id="OqoIeNOqjjjkwABBwfFl",
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128"
         )
         
         audio_bytes = b"".join(chunk for chunk in audio_stream)
         
-        # 3. Guardar en Google Drive (.wav) y registrar en Google Sheets
+        # 3. Guardar en Google Drive y Google Sheets
         guardar_en_sheets_y_drive(user_text, audio_bytes)
         
-        # 4. Retornar respuesta a la interfaz en base64
-        import base64
+        # 4. Retornar respuesta
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
         return {
