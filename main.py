@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIOBaseUpload
+from googleapiclient.http import MediaInMemoryUpload
 from pydub import AudioSegment
 import google.generativeai as genai
 from elevenlabs import ElevenLabs
@@ -50,13 +50,16 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
         audio_wav.export(wav_io, format="wav")
         wav_io.seek(0)
         
-        # 2. Subir el archivo WAV a Google Drive
+        # 2. Subir el archivo WAV a Google Drive usando MediaInMemoryUpload
         drive_service = build('drive', 'v3', credentials=creds)
         file_metadata = {
             'name': f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav',
             'parents': [FOLDER_ID]
         }
-        media = MediaIOBaseUpload(wav_io, mimetype='audio/wav')
+        
+        wav_bytes_data = wav_io.getvalue()
+        media = MediaInMemoryUpload(wav_bytes_data, mimetype='audio/wav')
+        
         file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         
         # 3. Registrar los datos en Google Sheets
@@ -68,7 +71,7 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
             valueInputOption="RAW",
             body={"values": valores}
         ).execute()
-        
+
     except Exception as e:
         print(f"❌ Error crítico al guardar en Sheets/Drive: {e}")
 
