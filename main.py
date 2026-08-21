@@ -1,9 +1,12 @@
 import os
 import json
 import tempfile
+from fastapi import FastAPI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+app = FastAPI()
 
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
@@ -39,3 +42,7 @@ def subir_audio_a_drive(file_path: str, file_name: str):
         print(f"✅ Audio subido exitosamente a Google Drive. ID: {file.get('id')}")
     except Exception as e:
         print(f"❌ Error al subir el audio a Google Drive: {str(e)}")
+
+@app.get("/")
+def read_root():
+    return {"status": "JARVIS Backend Operativo"}
