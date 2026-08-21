@@ -3,6 +3,7 @@ import json
 import uuid
 import random
 import base64
+import tempfile
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -78,7 +79,6 @@ async def procesar(request: Request):
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
 
         # 3. Guardado opcional en Drive usando un archivo temporal rápido
-        import tempfile
         nombre_archivo = f"jarvis_{uuid.uuid4()}.mp3"
         ruta_temporal = os.path.join(tempfile.gettempdir(), nombre_archivo)
         with open(ruta_temporal, "wb") as f:
@@ -114,5 +114,3 @@ def subir_audio_a_drive(file_path: str, file_name: str):
     file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
     media = MediaFileUpload(file_path, mimetype='audio/mpeg', resumable=True)
     service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True, fields='id').execute()
-    ).execute()
-    print(f"✅ Audio subido a Drive con éxito: {file_name}")
