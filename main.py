@@ -3,12 +3,12 @@ import json
 import datetime
 import io
 import base64
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
@@ -18,9 +18,8 @@ app = FastAPI()
 # Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
-FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Cargar la lista de keys desde la variable de entorno
+# Cargar la lista de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
 try:
     if raw_keys.startswith("["):
@@ -44,20 +43,19 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
+    """Genera respuesta con Gemini aplicando rotación de keys y usando gemini-3.6-flash."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
-            # Forzamos al cliente a usar SOLO la API KEY
             client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
-            
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
                 config={
-                    "system_instruction": "Eres JARVIS, un asistente de IA avanzado, formal y técnico."
+                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
                 }
             )
             if response and response.text:
@@ -67,9 +65,27 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             ultimo_error = e
             continue
             
-    raise Exception(f"Todas las keys fallaron. Último error: {ultimo_error}")
-    
-def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
+    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+
+def subir_audio_temporal(wav_bytes: bytes, filename: str) -> str:
+    """Sube el audio a un servicio temporal gratuito y devuelve el enlace de descarga directa."""
+    try:
+        url = "https://tmpfiles.org/api/v1/upload"
+        files = {'file': (filename, wav_bytes, 'audio/wav')}
+        response = requests.post(url, files=files)
+        if response.status_code == 200:
+            data = response.json()
+            # Tmpfiles devuelve una URL como https://tmpfiles.org/xxxx/audio.wav
+            # Para descarga directa, insertamos 'dl/' despues del dominio
+            original_url = data['data']['url']
+            direct_url = original_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            return direct_url
+    except Exception as e:
+        print(f"⚠️ No se pudo subir al almacenamiento temporal: {e}")
+    return "No disponible (Error temporal)"
+
+def registrar_en_sheets(texto: str, audio_link: str):
+    """Registra el texto y el enlace temporal del audio en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
@@ -78,30 +94,11 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
         creds_dict = json.loads(CREDENTIALS_JSON)
         creds = service_account.Credentials.from_service_account_info(
             creds_dict, 
-            scopes=[
-                'https://www.googleapis.com/auth/spreadsheets', 
-                'https://www.googleapis.com/auth/drive.file'
-            ]
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
         
-        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-        
-        wav_io = io.BytesIO()
-        audio_wav.export(wav_io, format="wav")
-        wav_io.seek(0)
-        
-        drive_service = build('drive', 'v3', credentials=creds)
-        file_metadata = {
-            'name': f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav',
-            'parents': [FOLDER_ID]
-        }
-        
-        media = MediaInMemoryUpload(wav_io.getvalue(), mimetype='audio/wav')
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        
         sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[datetime.datetime.now().isoformat(), texto, file.get('webViewLink')]]
+        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
         sheet_service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID, 
             range="A1", 
@@ -110,7 +107,7 @@ def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
         ).execute()
 
     except Exception as e:
-        print(f"❌ Error crítico al guardar en Sheets/Drive: {e}")
+        print(f"❌ Error crítico al registrar en Sheets: {e}")
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -193,23 +190,30 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # 1. Generar respuesta con Gemini 3.6 Flash aplicando el sistema de respaldos
+        # 1. Generar respuesta con Gemini 3.6 Flash
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
-        # 2. Generar audio con ElevenLabs usando tu Voice ID
+        # 2. Generar audio con ElevenLabs
         audio_stream = eleven_client.text_to_speech.convert(
             text=respuesta_texto,
             voice_id="OqoIeNOqjjjkwABBwfFl",
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128"
         )
-        
         audio_bytes = b"".join(chunk for chunk in audio_stream)
         
-        # 3. Guardar en Google Drive y Google Sheets
-        guardar_en_sheets_y_drive(user_text, audio_bytes)
+        # 3. Convertir MP3 a WAV
+        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+        wav_io = io.BytesIO()
+        audio_wav.export(wav_io, format="wav")
         
-        # 4. Retornar respuesta
+        # 4. Subir a almacenamiento temporal y registrar en Google Sheets
+        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
+        audio_link = subir_audio_temporal(wav_io.getvalue(), filename)
+        registrar_en_sheets(user_text, audio_link)
+        
+        # 5. Retornar respuesta al cliente
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
         return {
