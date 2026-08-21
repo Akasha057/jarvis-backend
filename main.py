@@ -32,7 +32,6 @@ async def procesar(request: Request):
         if not client_eleven:
             return JSONResponse(status_code=500, content={"status": "error", "message": "Falta configurar la API Key de ElevenLabs en Render."})
 
-        # Procesamos la lista de llaves AQ... de Render
         raw_keys = os.getenv("GEMINI_API_KEYS", "")
         if not raw_keys:
             return JSONResponse(status_code=500, content={"status": "error", "message": "No se encontraron API Keys en Render."})
@@ -46,12 +45,10 @@ async def procesar(request: Request):
             lista_gemini_keys = [k.strip() for k in raw_keys.replace('"', '').replace("'", "").split(",") if k.strip()]
 
         if not lista_gemini_keys:
-            return JSONResponse(status_code=500, content={"status": "error", "message": "La lista de llaves está vacía."} )
+            return JSONResponse(status_code=500, content={"status": "error", "message": "La lista de llaves está vacía."})
 
-        # Seleccionamos una llave al azar
+        # Seleccionamos llave e inicializamos Gemini
         api_key_actual = random.choice(lista_gemini_keys)
-        
-        # Inicializamos el cliente moderno que acepta credenciales AQ...
         client_gemini = genai.Client(api_key=api_key_actual)
 
         data = await request.json()
@@ -67,7 +64,7 @@ async def procesar(request: Request):
         )
         texto_respuesta = response_gemini.text
 
-        # 2. Generación de Audio con ElevenLabs (¡Lo crítico que debe funcionar sí o sí!)
+        # 2. Generación de Audio con ElevenLabs
         audio_generator = client_eleven.text_to_speech.convert(
             text=texto_respuesta,
             voice_id=eleven_voice_id,
@@ -82,19 +79,18 @@ async def procesar(request: Request):
             for chunk in audio_generator:
                 f.write(chunk)
 
-        # 3. Intento de respaldo en Google Drive (si falla, no corta la respuesta al usuario)
+        # 3. Intentar subir a Drive de forma completamente aislada
         try:
             subir_audio_a_drive(ruta_temporal, nombre_archivo)
         except Exception as drive_err:
-            print(f"⚠️ Alerta menor de Drive (el audio se generó igual): {drive_err}")
+            print(f"⚠️ Aviso de Drive (no afecta la voz): {drive_err}")
 
-        # Leemos el archivo generado para devolverlo o asegurarnos de limpiar
-        if os.path.exists(ruta_temporal):
-            os.remove(ruta_temporal)
-        
+        # Devolvemos tanto el texto como la URL para que el frontend reproduzca el audio correcto
+        # (Asumiendo que tu frontend maneja la respuesta o reproduce el estático temporal si aplica)
         return {
             "status": "ok", 
-            "respuesta_texto": texto_respuesta
+            "respuesta_texto": texto_respuesta,
+            "audio_url": f"/static/{nombre_archivo}" if os.path.exists(ruta_temporal) else ""
         }
 
     except Exception as e:
