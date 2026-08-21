@@ -107,9 +107,22 @@ def subir_audio_a_drive(file_path: str, file_name: str):
         )
         service = build('drive', 'v3', credentials=creds)
 
-        file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
+        # Especificamos los metadatos y la carpeta de destino obligatoria para cuentas de servicio
+        file_metadata = {
+            'name': file_name, 
+            'parents': [FOLDER_ID]
+        }
+        
         media = MediaFileUpload(file_path, mimetype='audio/mpeg', resumable=True)
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f"✅ Audio subido a Drive: {file_name}")
+        
+        # Forzamos la subida dentro de la carpeta compartida
+        file = service.files().create(
+            body=file_metadata, 
+            media_body=media, 
+            supportsAllDrives=True,
+            fields='id'
+        ).execute()
+        
+        print(f"✅ Audio subido a Drive con éxito: {file_name} (ID: {file.get('id')})")
     except Exception as e:
-        print(f"❌ Error en Drive: {e}")
+        print(f"❌ Error detallado en Drive: {e}")
