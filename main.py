@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 import random
-import tempfile
+import base64
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -30,7 +30,7 @@ async def get_index():
 async def procesar(request: Request):
     try:
         if not client_eleven:
-            return JSONResponse(status_code=500, content={"status": "error", "message": "Falta configurar la API Key de ElevenLabs en Render."})
+            return JSONResponse(status_code=500, content={"status": "error", "message": "Falta configurar la API Key de ElevenLabs."})
 
         raw_keys = os.getenv("GEMINI_API_KEYS", "")
         if not raw_keys:
@@ -64,7 +64,7 @@ async def procesar(request: Request):
         )
         texto_respuesta = response_gemini.text
 
-        # 2. Generación de Audio con ElevenLabs
+        # 2. Generación de Audio con ElevenLabs en memoria (bytes)
         audio_generator = client_eleven.text_to_speech.convert(
             text=texto_respuesta,
             voice_id=eleven_voice_id,
@@ -72,25 +72,30 @@ async def procesar(request: Request):
             output_format="mp3_44100_128",
         )
 
+        audio_bytes = b"".join(chunk for chunk in audio_generator)
+        
+        # Convertimos el audio a Base64 para enviarlo seguro al frontend
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+        # 3. Guardado opcional en Drive usando un archivo temporal rápido
+        import tempfile
         nombre_archivo = f"jarvis_{uuid.uuid4()}.mp3"
         ruta_temporal = os.path.join(tempfile.gettempdir(), nombre_archivo)
-        
         with open(ruta_temporal, "wb") as f:
-            for chunk in audio_generator:
-                f.write(chunk)
+            f.write(audio_bytes)
 
-        # 3. Intentar subir a Drive de forma completamente aislada
         try:
             subir_audio_a_drive(ruta_temporal, nombre_archivo)
         except Exception as drive_err:
-            print(f"⚠️ Aviso de Drive (no afecta la voz): {drive_err}")
+            print(f"⚠️ Aviso de Drive: {drive_err}")
 
-        # Devolvemos tanto el texto como la URL para que el frontend reproduzca el audio correcto
-        # (Asumiendo que tu frontend maneja la respuesta o reproduce el estático temporal si aplica)
+        if os.path.exists(ruta_temporal):
+            os.remove(ruta_temporal)
+
         return {
             "status": "ok", 
             "respuesta_texto": texto_respuesta,
-            "audio_url": f"/static/{nombre_archivo}" if os.path.exists(ruta_temporal) else ""
+            "audio_base64": audio_base64
         }
 
     except Exception as e:
@@ -101,23 +106,13 @@ def subir_audio_a_drive(file_path: str, file_name: str):
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
         return
-
     creds_dict = json.loads(creds_json)
     creds = service_account.Credentials.from_service_account_info(
         creds_dict, scopes=['https://www.googleapis.com/auth/drive']
     )
     service = build('drive', 'v3', credentials=creds)
-
-    file_metadata = {
-        'name': file_name, 
-        'parents': [FOLDER_ID]
-    }
+    file_metadata = {'name': file_name, 'parents': [FOLDER_ID]}
     media = MediaFileUpload(file_path, mimetype='audio/mpeg', resumable=True)
-    
-    service.files().create(
-        body=file_metadata, 
-        media_body=media, 
-        supportsAllDrives=True,
-        fields='id'
+    service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True, fields='id').execute()
     ).execute()
     print(f"✅ Audio subido a Drive con éxito: {file_name}")
