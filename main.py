@@ -44,30 +44,31 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Intenta generar la respuesta rotando entre las API keys usando gemini-3.6-flash."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
-            client = genai.Client(api_key=api_key)
+            # Forzamos al cliente a usar SOLO la API KEY
+            client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+            
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
                 config={
-                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
+                    "system_instruction": "Eres JARVIS, un asistente de IA avanzado, formal y técnico."
                 }
             )
             if response and response.text:
                 return response.text
         except Exception as e:
-            print(f"⚠️ Una API key falló o se quedó sin cuota. Probando la siguiente... Error: {e}")
+            print(f"⚠️ API Key falló: {e}")
             ultimo_error = e
             continue
             
-    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
-
+    raise Exception(f"Todas las keys fallaron. Último error: {ultimo_error}")
+    
 def guardar_en_sheets_y_drive(texto: str, audio_bytes: bytes):
     try:
         if not CREDENTIALS_JSON:
