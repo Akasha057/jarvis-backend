@@ -44,7 +44,7 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Intenta generar la respuesta rotando entre las API keys usando gemini-3.7-flash."""
+    """Intenta generar la respuesta rotando entre las API keys usando gemini-3.6-flash."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
@@ -53,7 +53,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.7-flash",
+                model="gemini-3.6-flash",
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
@@ -192,7 +192,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # 1. Generar respuesta con Gemini 3.7 Flash aplicando el sistema de respaldos
+        # 1. Generar respuesta con Gemini 3.6 Flash aplicando el sistema de respaldos
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs usando tu Voice ID
