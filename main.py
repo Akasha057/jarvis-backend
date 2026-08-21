@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import random
 import tempfile
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -17,12 +18,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-# Inicializamos leyendo exactamente los nombres de tus variables de Render
-gemini_api_key = os.getenv("GEMINI_API_KEYS")
+# Cargamos las llaves de ElevenLabs y el ID de voz de manera segura
 eleven_api_key = os.getenv("ELEVENLABS_API_KEY")
 eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
-
-client_gemini = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 client_eleven = ElevenLabs(api_key=eleven_api_key) if eleven_api_key else None
 
 @app.get("/")
@@ -32,8 +30,29 @@ async def get_index():
 @app.post("/procesar")
 async def procesar(request: Request):
     try:
-        if not client_gemini or not client_eleven:
-            return {"status": "error", "message": "Faltan configurar las API Keys en el servidor de Render."}
+        if not client_eleven:
+            return {"status": "error", "message": "Falta configurar la API Key de ElevenLabs en Render."}
+
+        # Procesamos la variable GEMINI_API_KEYS (soporta lista separada por comas o formato JSON)
+        raw_keys = os.getenv("GEMINI_API_KEYS", "")
+        if not raw_keys:
+            return {"status": "error", "message": "No se encontraron API Keys de Gemini en Render."}
+
+        # Intentamos parsear como JSON o separar por comas
+        try:
+            if raw_keys.startswith("["):
+                lista_gemini_keys = json.loads(raw_keys)
+            else:
+                lista_gemini_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        except Exception:
+            lista_gemini_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+
+        if not lista_gemini_keys:
+            return {"status": "error", "message": "La lista de API Keys de Gemini está vacía o malformada."}
+
+        # Seleccionamos una llave al azar para esta petición
+        api_key_actual = random.choice(lista_gemini_keys)
+        client_gemini = genai.Client(api_key=api_key_actual)
 
         data = await request.json()
         texto_usuario = data.get("text", "")
@@ -41,7 +60,7 @@ async def procesar(request: Request):
         if not texto_usuario:
             return {"status": "error", "message": "No se recibió texto."}
 
-        # 1. Gemini (Actualizado a gemini-3.6)
+        # 1. Gemini (Modelo 3.6)
         response_gemini = client_gemini.models.generate_content(
             model='gemini-3.6',
             contents=texto_usuario,
