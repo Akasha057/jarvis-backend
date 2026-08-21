@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google import genai
 from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -58,27 +59,38 @@ async def procesar(request: Request):
         if not texto_usuario:
             return JSONResponse(status_code=400, content={"status": "error", "message": "No se recibió texto."})
 
-        # 1. Respuesta de Gemini (gemini-3.6-flash)
+        # Prompt de sistema integrado para obligar a Gemini a responder con el tono estricto de JARVIS
+        prompt_sistema = (
+            "Eres JARVIS, el asistente de inteligencia artificial avanzado. "
+            "Responde de manera estricta, formal, sobria, fría, sumamente técnica y sin expresiones alegres o exageradas. "
+            "Evita usar signos de exclamación excesivos o tonos joviales. Mantén la compostura propia de un sistema de alta tecnología."
+        )
+
+        # 1. Respuesta de Gemini (gemini-3.6-flash) con directiva de tono
         response_gemini = client_gemini.models.generate_content(
             model='gemini-3.6-flash',
-            contents=texto_usuario,
+            contents=f"{prompt_sistema}\n\nUsuario: {texto_usuario}",
         )
         texto_respuesta = response_gemini.text
 
-        # 2. Generación de Audio con ElevenLabs en memoria (bytes)
+        # 2. Generación de Audio con ElevenLabs aplicando estabilidad alta (voz sobria y robótica)
         audio_generator = client_eleven.text_to_speech.convert(
             text=texto_respuesta,
             voice_id=eleven_voice_id,
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128",
+            voice_settings=VoiceSettings(
+                stability=0.92,       # Alta estabilidad para evitar modulación alegre / emocional
+                similarity_boost=0.75, # Mantiene la fidelidad de la voz original
+                style=0.0,             # Cero estilo exagerado
+                use_speaker_boost=True
+            )
         )
 
         audio_bytes = b"".join(chunk for chunk in audio_generator)
-        
-        # Convertimos el audio a Base64 para enviarlo seguro al frontend
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
 
-        # 3. Guardado opcional en Drive usando un archivo temporal rápido
+        # 3. Resguardo opcional en Google Drive
         nombre_archivo = f"jarvis_{uuid.uuid4()}.mp3"
         ruta_temporal = os.path.join(tempfile.gettempdir(), nombre_archivo)
         with open(ruta_temporal, "wb") as f:
