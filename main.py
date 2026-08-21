@@ -1,73 +1,41 @@
 import os
 import json
-from fastapi import FastAPI, Request
-from google import genai
-from google.genai import types
+import tempfile
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-class JarvisUnifiedBrain:
-    def __init__(self, api_keys: list[str], elevenlabs_key: str, voice_id: str):
-        self.api_keys = api_keys
-        self.key_index = 0
-        self.elevenlabs_key = elevenlabs_key
-        self.voice_id = voice_id
+FOLDER_ID = "10nJftGge_D1W_Ph7pyK1QiC_ZNSx5ivR"
 
-    def _get_next_client(self):
-        """Rota de manera circular entre las claves del pool para usar el SDK oficial."""
-        key = self.api_keys[self.key_index]
-        self.key_index = (self.key_index + 1) % len(self.api_keys)
-        return genai.Client(api_key=key)
+def subir_audio_a_drive(file_path: str, file_name: str):
+    """Sube el archivo .wav generado a la carpeta de Google Drive usando la cuenta de servicio."""
+    try:
+        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if not creds_json:
+            print("⚠️ Falta la variable de entorno GOOGLE_CREDENTIALS_JSON")
+            return
 
-    def pensar(self, prompt: str, usar_pro: bool = False) -> str:
-        """Procesa el texto usando Gemini con rotación de claves y enrutamiento inteligente."""
-        client = self._get_next_client()
-        # Usamos el modelo actual indicado por el servidor
-        modelo = 'gemini-3.6-flash'
-
-        system_instruction = (
-            "Eres J.A.R.V.I.S., el asistente virtual de inteligencia artificial. "
-            "Tu tono es formal, eficiente, educado y con un toque sutil de ironía refinada. "
-            "Respondes siempre brevemente en español latino."
+        # Cargamos las credenciales desde la variable de entorno de Render
+        creds_dict = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
         )
+        
+        service = build('drive', 'v3', credentials=creds)
 
-        try:
-            response = client.models.generate_content(
-                model=modelo,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.7,
-                )
-            )
-            return response.text
-        except Exception as e:
-            return f"Error en el núcleo de procesamiento: {str(e)}"
-
-# Obtenemos las credenciales de forma segura desde las variables de entorno configuradas en Render
-raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
-try:
-    mis_claves_gemini = json.loads(raw_keys)
-except Exception:
-    mis_claves_gemini = []
-
-eleven_key = os.getenv("ELEVENLABS_API_KEY", "")
-voice_id_jarvis = os.getenv("ELEVENLABS_VOICE_ID", "OqoIeNOqjjjkwABBwfFl")
-
-# Inicializamos el cerebro
-cerebro = JarvisUnifiedBrain(
-    api_keys=mis_claves_gemini,
-    elevenlabs_key=eleven_key,
-    voice_id=voice_id_jarvis
-)
-
-app = FastAPI()
-
-@app.post("/jarvis")
-async def handle_jarvis(request: Request):
-    data = await request.json()
-    pregunta = data.get("prompt", "Hola")
-    respuesta = cerebro.pensar(pregunta)
-    return {"respuesta": respuesta}
-
-@app.get("/")
-def read_root():
-    return {"status": "J.A.R.V.I.S. online"}
+        file_metadata = {
+            'name': file_name,
+            'parents': [FOLDER_ID]
+        }
+        
+        media = MediaFileUpload(file_path, mimetype='audio/wav', resumable=True)
+        
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        
+        print(f"✅ Audio subido exitosamente a Google Drive. ID: {file.get('id')}")
+    except Exception as e:
+        print(f"❌ Error al subir el audio a Google Drive: {str(e)}")
