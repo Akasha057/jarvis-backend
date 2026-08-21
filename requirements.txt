@@ -1,4 +1,6 @@
 fastapi
 uvicorn
-requests
 google-genai
+requests
+google-api-python-client
+google-auth
