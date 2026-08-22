@@ -129,9 +129,10 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
     """Sube el audio al bucket 'jarvis-audios' usando el cliente oficial."""
     try:
         if not supabase:
+            print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida limpia usando el cliente oficial
+        # Método limpio del cliente oficial que usábamos cuando funcionaba
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes,
