@@ -132,9 +132,10 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
+        # Subimos directamente los bytes usando el parámetro file con content_type
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=bytes(wav_bytes),
+            file=wav_bytes,
             file_options={"content-type": "audio/wav"}
         )
         
