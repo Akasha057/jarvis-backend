@@ -44,11 +44,12 @@ if not GEMINI_KEYS:
 
 # Inicializar ElevenLabs
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+VOICE_ID = "OqoIeNOqjjjkwABBwfFl"  # Tu Voice ID configurado
 
 class PromptRequest(BaseModel):
     text: str
 
-def generar_respuesta_con_fallback(user_text: str) -> str:
+def generar_respuesta_gemini(user_text: str) -> str:
     """Genera respuesta con Gemini aplicando rotación de keys y usando gemini-3.6-flash."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
@@ -73,7 +74,33 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-def registrar_en_sheets(texto: str, audio_link: str):
+def generar_audio_elevenlabs(text: str) -> bytes:
+    """Genera audio en formato WAV usando ElevenLabs."""
+    try:
+        audio_generator = eleven_client.text_to_speech.convert(
+            voice_id=VOICE_ID,
+            optimize_streaming_latency="0",
+            output_format="pcm_22050",
+            text=text,
+            model_id="eleven_multilingual_v2"
+        )
+        audio_bytes_raw = b"".join(chunk for chunk in audio_generator)
+        
+        # Convertir PCM raw a WAV usando pydub
+        segment = AudioSegment(
+            data=audio_bytes_raw,
+            sample_width=2,
+            frame_rate=22050,
+            channels=1
+        )
+        wav_io = io.BytesIO()
+        segment.export(wav_io, format="wav")
+        return wav_io.getvalue()
+    except Exception as e:
+        print(f"❌ Error generando audio con ElevenLabs: {e}")
+        raise e
+
+def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
     """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
@@ -87,7 +114,7 @@ def registrar_en_sheets(texto: str, audio_link: str):
         )
         
         sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
+        valores = [[timestamp_str, texto, audio_link]]
         sheet_service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID, 
             range="A1", 
@@ -105,7 +132,6 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Aseguramos que se envíe como bytes nativos
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=bytes(wav_bytes),
@@ -175,9 +201,8 @@ def home():
                         if(data.status === "ok") {
                             status.innerText = "JARVIS: " + data.respuesta_texto;
                             
-                            if(data.audio_base64) {
-                                const audioSrc = "data:audio/mp3;base64," + data.audio_base64;
-                                const audio = new Audio(audioSrc);
+                            if(data.audio_url) {
+                                const audio = new Audio(data.audio_url);
                                 audio.play().catch(e => console.log("Error al reproducir audio:", e));
                             }
                         } else {
@@ -198,33 +223,42 @@ def home():
 async def procesar(data: dict):
     user_text = data.get("text", "")
     
-    # 1. Generar respuesta con Gemini
-    response_text = generar_respuesta_gemini(user_text)
-    
-    # 2. Generar audio con ElevenLabs
-    audio_bytes = generar_audio_elevenlabs(response_text)
-    
-    # 3. Preparar nombre del archivo
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"audio_{timestamp}.wav"
-    
-    # 4. Subir a Supabase
-    public_url = subir_a_supabase(audio_bytes, filename)
-    
-    # 5. Registrar en Google Sheets
-    registrar_en_sheets(datetime.now().isoformat(), user_text, public_url)
-    
-    # 6. Notificar a Pipedream para la subida a Google Drive
     try:
-        webhook_url = "https://eowdtdj2mhqdehn.m.pipedream.net"
-        payload = {
-            "audio_url": public_url,
-            "filename": filename
-        }
-        requests.post(webhook_url, json=payload)
-        print(f"✅ Notificación enviada a Pipedream para {filename}")
-    except Exception as e:
-        print(f"❌ Error enviando notificación a Pipedream: {e}")
+        # 1. Generar respuesta con Gemini
+        response_text = generar_respuesta_gemini(user_text)
+        
+        # 2. Generar audio con ElevenLabs
+        audio_bytes = generar_audio_elevenlabs(response_text)
+        
+        # 3. Preparar nombre del archivo
+        timestamp_str = datetime.datetime.now().isoformat()
+        timestamp_file = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"audio_{timestamp_file}.wav"
+        
+        # 4. Subir a Supabase
+        public_url = subir_a_supabase(audio_bytes, filename)
+        
+        # 5. Registrar en Google Sheets
+        registrar_en_sheets(timestamp_str, user_text, public_url)
+        
+        # 6. Notificar a Pipedream para la subida a Google Drive
+        try:
+            webhook_url = "https://eowdtdj2mhqdehn.m.pipedream.net"
+            payload = {
+                "audio_url": public_url,
+                "filename": filename
+            }
+            requests.post(webhook_url, json=payload)
+            print(f"✅ Notificación enviada a Pipedream para {filename}")
+        except Exception as e:
+            print(f"❌ Error enviando notificación a Pipedream: {e}")
 
-    # 7. Retornar respuesta al cliente
-    return {"text": response_text, "audio_url": public_url}
+        # 7. Retornar respuesta compatible con el script de la interfaz
+        return {
+            "status": "ok",
+            "respuesta_texto": response_text,
+            "audio_url": public_url
+        }
+    except Exception as e:
+        print(f"❌ Error en /procesar: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
