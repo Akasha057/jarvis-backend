@@ -74,16 +74,13 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' de Supabase sin metadatos JSON y retorna la URL pública."""
+    """Sube el audio al bucket 'jarvis-audios' de Supabase sin metadatos conflictivos y retorna la URL pública."""
     try:
         if not supabase:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida limpia de bytes directos sin file_options para evitar el error de JSON
-        supabase.storage.from_("jarvis-audios.upload(filename, wav_bytes) # O la sintaxis directa:
-        
-        # Corrección formal para el cliente supabase-py:
+        # Subida directa de bytes sin opciones de cabecera complejas
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes
