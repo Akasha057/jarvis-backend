@@ -195,42 +195,36 @@ def home():
     """
 
 @app.post("/procesar")
-def procesar(payload: PromptRequest):
+async def procesar(data: dict):
+    user_text = data.get("text", "")
+    
+    # 1. Generar respuesta con Gemini
+    response_text = generar_respuesta_gemini(user_text)
+    
+    # 2. Generar audio con ElevenLabs
+    audio_bytes = generar_audio_elevenlabs(response_text)
+    
+    # 3. Preparar nombre del archivo
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"audio_{timestamp}.wav"
+    
+    # 4. Subir a Supabase
+    public_url = subir_a_supabase(audio_bytes, filename)
+    
+    # 5. Registrar en Google Sheets
+    registrar_en_sheets(datetime.now().isoformat(), user_text, public_url)
+    
+    # 6. Notificar a Pipedream para la subida a Google Drive
     try:
-        user_text = payload.text
-        
-        # 1. Generar respuesta con Gemini 3.6 Flash
-        respuesta_texto = generar_respuesta_con_fallback(user_text)
-
-        # 2. Generar audio con ElevenLabs
-        audio_stream = eleven_client.text_to_speech.convert(
-            text=respuesta_texto,
-            voice_id="OqoIeNOqjjjkwABBwfFl",
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128"
-        )
-        audio_bytes = b"".join(chunk for chunk in audio_stream)
-        
-        # 3. Convertir MP3 a WAV
-        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-        wav_io = io.BytesIO()
-        audio_wav.export(wav_io, format="wav")
-        
-        # 4. Subir a Supabase Storage y registrar en Google Sheets
-        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        audio_link = subir_a_supabase(wav_io.getvalue(), filename)
-        registrar_en_sheets(user_text, audio_link)
-        
-        # 5. Retornar respuesta al cliente
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-        
-        return {
-            "status": "ok",
-            "respuesta_texto": respuesta_texto,
-            "audio_base64": audio_b64
+        webhook_url = "https://eowdtdj2mhqdehn.m.pipedream.net"
+        payload = {
+            "audio_url": public_url,
+            "filename": filename
         }
-        
+        requests.post(webhook_url, json=payload)
+        print(f"✅ Notificación enviada a Pipedream para {filename}")
     except Exception as e:
-        print(f"❌ Error en /procesar: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error enviando notificación a Pipedream: {e}")
+
+    # 7. Retornar respuesta al cliente
+    return {"text": response_text, "audio_url": public_url}
