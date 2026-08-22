@@ -80,11 +80,13 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Forzar la subida clásica por almacenamiento de objetos directo
+        # Usar io.BytesIO para envolver los bytes y evitar conflictos con TUS
+        file_obj = io.BytesIO(wav_bytes)
+
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=wav_bytes,
-            file_options={"content-type": "audio/wav", "x-upsert": "true"}
+            file=file_obj,
+            file_options={"content-type": "audio/wav"}
         )
         
         public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
