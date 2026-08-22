@@ -126,23 +126,34 @@ def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
         print(f"❌ Error crítico al registrar en Sheets: {e}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' usando el cliente oficial."""
+    """Sube el audio al bucket 'jarvis-audios' mediante HTTP POST directo."""
     try:
-        if not supabase:
+        if not SUPABASE_URL or not SUPABASE_KEY:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Método limpio del cliente oficial que usábamos cuando funcionaba
-        supabase.storage.from_("jarvis-audios").upload(
-            path=filename,
-            file=wav_bytes,
-            file_options={"content-type": "audio/wav"}
-        )
+        # Endpoint directo del bucket de Supabase Storage
+        url = f"{SUPABASE_URL}/storage/v1/object/jarvis-audios/{filename}"
         
-        public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
-        return public_url
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "audio/wav",
+            "x-upsert": "true"
+        }
+
+        response = requests.post(url, data=wav_bytes, headers=headers)
+        
+        if response.status_code in [200, 201]:
+            # Construir y retornar la URL pública oficial limpia
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/jarvis-audios/{filename}"
+            return public_url
+        else:
+            print(f"❌ Error en Supabase HTTP {response.status_code}: {response.text}")
+            return f"Error al subir: {response.status_code}"
+
     except Exception as e:
-        print(f"❌ Error subiendo a Supabase: {e}")
+        print(f"❌ Error crítico subiendo a Supabase: {e}")
         return f"Error al subir: {e}"
         
 @app.get("/", response_class=HTMLResponse)
