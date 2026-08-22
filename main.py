@@ -74,17 +74,17 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' de Supabase y retorna la URL pública."""
+    """Sube el audio al bucket 'jarvis-audios' de Supabase de forma directa y retorna la URL pública."""
     try:
         if not supabase:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida limpia con el parámetro de upsert correcto
+        # Forzar la subida clásica por almacenamiento de objetos directo
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes,
-            file_options={"content-type": "audio/wav", "upsert": "true"}
+            file_options={"content-type": "audio/wav", "x-upsert": "true"}
         )
         
         public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
