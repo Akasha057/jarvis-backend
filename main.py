@@ -92,6 +92,7 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
         print(f"❌ Error subiendo a Supabase: {e}")
         return f"Error al subir: {e}"
         
+@app.get("/", response_class=HTMLResponse)
 def home():
     return """
     <!DOCTYPE html>
