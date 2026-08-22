@@ -12,12 +12,18 @@ from googleapiclient.discovery import build
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
+from supabase import create_client, Client
 
 app = FastAPI()
 
 # Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
+
+# Configuración de Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # Cargar la lista de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
@@ -67,25 +73,29 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-def subir_audio_temporal(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio a un servicio temporal gratuito y devuelve el enlace de descarga directa."""
+def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
+    """Sube el audio al bucket 'jarvis-audios' de Supabase y retorna la URL pública."""
     try:
-        url = "https://tmpfiles.org/api/v1/upload"
-        files = {'file': (filename, wav_bytes, 'audio/wav')}
-        response = requests.post(url, files=files)
-        if response.status_code == 200:
-            data = response.json()
-            # Tmpfiles devuelve una URL como https://tmpfiles.org/xxxx/audio.wav
-            # Para descarga directa, insertamos 'dl/' despues del dominio
-            original_url = data['data']['url']
-            direct_url = original_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-            return direct_url
+        if not supabase:
+            print("⚠️ Supabase no está configurado correctamente.")
+            return "No disponible (Sin credenciales de Supabase)"
+
+        # Subir el archivo al bucket jarvis-audios
+        supabase.storage.from_("jarvis-audios").upload(
+            path=filename,
+            file=wav_bytes,
+            file_options={"content-type": "audio/wav", "x-upsert": "true"}
+        )
+        
+        # Obtener la URL pública del archivo subido
+        public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
+        return public_url
     except Exception as e:
-        print(f"⚠️ No se pudo subir al almacenamiento temporal: {e}")
-    return "No disponible (Error temporal)"
+        print(f"❌ Error subiendo a Supabase: {e}")
+        return f"Error al subir: {e}"
 
 def registrar_en_sheets(texto: str, audio_link: str):
-    """Registra el texto y el enlace temporal del audio en Google Sheets."""
+    """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
@@ -208,9 +218,9 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
         
-        # 4. Subir a almacenamiento temporal y registrar en Google Sheets
+        # 4. Subir a Supabase Storage y registrar en Google Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        audio_link = subir_audio_temporal(wav_io.getvalue(), filename)
+        audio_link = subir_a_supabase(wav_io.getvalue(), filename)
         registrar_en_sheets(user_text, audio_link)
         
         # 5. Retornar respuesta al cliente
