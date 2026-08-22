@@ -7,3 +7,4 @@ google-auth
 elevenlabs
 pydub
 audioop-lts
+supabase
