@@ -73,6 +73,31 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
+def registrar_en_sheets(texto: str, audio_link: str):
+    """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
+    try:
+        if not CREDENTIALS_JSON:
+            print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
+            return
+
+        creds_dict = json.loads(CREDENTIALS_JSON)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, 
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        
+        sheet_service = build('sheets', 'v4', credentials=creds)
+        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
+        sheet_service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID, 
+            range="A1", 
+            valueInputOption="RAW",
+            body={"values": valores}
+        ).execute()
+
+    except Exception as e:
+        print(f"❌ Error crítico al registrar en Sheets: {e}")
+
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
     """Sube el audio al bucket 'jarvis-audios' de Supabase sin metadatos conflictivos y retorna la URL pública."""
     try:
