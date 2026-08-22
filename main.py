@@ -74,20 +74,19 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' de Supabase y retorna la URL pública."""
+    """Sube el audio al bucket 'jarvis-audios' de Supabase sin metadatos JSON y retorna la URL pública."""
     try:
         if not supabase:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Crear un buffer binario limpio
-        file_buffer = io.BytesIO(wav_bytes)
+        # Subida limpia de bytes directos sin file_options para evitar el error de JSON
+        supabase.storage.from_("jarvis-audios.upload(filename, wav_bytes) # O la sintaxis directa:
         
-        # Subida directa utilizando el buffer con re-apertura de lectura
+        # Corrección formal para el cliente supabase-py:
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=file_buffer.getvalue(),
-            file_options={"content-type": "audio/wav"}
+            file=wav_bytes
         )
         
         public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
@@ -95,32 +94,7 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
     except Exception as e:
         print(f"❌ Error subiendo a Supabase: {e}")
         return f"Error al subir: {e}"
-def registrar_en_sheets(texto: str, audio_link: str):
-    """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
-    try:
-        if not CREDENTIALS_JSON:
-            print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
-            return
-
-        creds_dict = json.loads(CREDENTIALS_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, 
-            scopes=['https://www.googleapis.com/auth/spreadsheets']
-        )
         
-        sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
-        sheet_service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID, 
-            range="A1", 
-            valueInputOption="RAW",
-            body={"values": valores}
-        ).execute()
-
-    except Exception as e:
-        print(f"❌ Error crítico al registrar en Sheets: {e}")
-
-@app.get("/", response_class=HTMLResponse)
 def home():
     return """
     <!DOCTYPE html>
