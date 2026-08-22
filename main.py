@@ -80,11 +80,11 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subir el archivo al bucket jarvis-audios
+        # Subir el archivo al bucket jarvis-audios de forma limpia
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes,
-            file_options={"content-type": "audio/wav", "x-upsert": "true"}
+            file_options={"content-type": "audio/wav"}
         )
         
         # Obtener la URL pública del archivo subido
