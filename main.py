@@ -99,16 +99,16 @@ def registrar_en_sheets(texto: str, audio_link: str):
         print(f"❌ Error crítico al registrar en Sheets: {e}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' de Supabase especificando content-type y retorna la URL pública."""
+    """Sube el audio al bucket 'jarvis-audios' de Supabase y retorna la URL pública."""
     try:
         if not supabase:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida especificando el content-type en formato diccionario correcto para evitar errores de JSON
+        # Aseguramos que se envíe como bytes nativos
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=wav_bytes,
+            file=bytes(wav_bytes),
             file_options={"content-type": "audio/wav"}
         )
         
@@ -117,7 +117,7 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
     except Exception as e:
         print(f"❌ Error subiendo a Supabase: {e}")
         return f"Error al subir: {e}"
-
+        
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
