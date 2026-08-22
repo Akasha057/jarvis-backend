@@ -80,10 +80,13 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Pasar los bytes directamente asegurando el content-type correcto
+        # Crear un buffer binario limpio
+        file_buffer = io.BytesIO(wav_bytes)
+        
+        # Subida directa utilizando el buffer con re-apertura de lectura
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=wav_bytes,
+            file=file_buffer.getvalue(),
             file_options={"content-type": "audio/wav"}
         )
         
@@ -92,7 +95,6 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
     except Exception as e:
         print(f"❌ Error subiendo a Supabase: {e}")
         return f"Error al subir: {e}"
-
 def registrar_en_sheets(texto: str, audio_link: str):
     """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
     try:
