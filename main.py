@@ -73,7 +73,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
-    """Sube el audio directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
+    """Sube el audio WAV directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
@@ -145,16 +145,21 @@ def home():
             button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; }
             button:hover { background: #004444; }
             #status { margin-top: 20px; font-size: 18px; }
+            #download-container { margin-top: 25px; }
+            a.download-link { color: #00ffcc; background: #001111; border: 1px dashed #00ffcc; padding: 10px 15px; text-decoration: none; border-radius: 5px; display: inline-block; }
+            a.download-link:hover { background: #003333; }
         </style>
     </head>
     <body>
         <h1>JARVIS</h1>
         <button id="start-btn">🎙️ ACTIVAR MODO VOZ</button>
         <p id="status">Esperando comandos...</p>
+        <div id="download-container"></div>
 
         <script>
             const btn = document.getElementById('start-btn');
             const status = document.getElementById('status');
+            const downloadContainer = document.getElementById('download-container');
             
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
@@ -166,6 +171,7 @@ def home():
                 btn.onclick = () => {
                     recognition.start();
                     status.innerText = "Escuchando...";
+                    downloadContainer.innerHTML = "";
                 };
 
                 recognition.onresult = async (event) => {
@@ -190,9 +196,28 @@ def home():
                             status.innerText = "JARVIS: " + data.respuesta_texto;
                             
                             if(data.audio_base64) {
-                                const audioSrc = "data:audio/mp3;base64," + data.audio_base64;
+                                const audioSrc = "data:audio/wav;base64," + data.audio_base64;
                                 const audio = new Audio(audioSrc);
                                 audio.play().catch(e => console.log("Error al reproducir audio:", e));
+
+                                // Generar nombre de archivo único con fecha y hora
+                                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                                const fileName = `jarvis_audio_${timestamp}.wav`;
+
+                                // Descarga automática en segundo plano
+                                const downloadLink = document.createElement('a');
+                                downloadLink.href = audioSrc;
+                                downloadLink.download = fileName;
+                                document.body.appendChild(downloadLink);
+                                downloadLink.click();
+                                document.body.removeChild(downloadLink);
+
+                                // Mostrar también el botón manual por si acaso
+                                downloadContainer.innerHTML = `
+                                    <a class="download-link" href="${audioSrc}" download="${fileName}">
+                                        📥 Volver a descargar audio (.WAV)
+                                    </a>
+                                `;
                             }
                         } else {
                             status.innerText = "Error: " + (data.message || "Respuesta inválida");
@@ -216,7 +241,7 @@ def procesar(payload: PromptRequest):
         # 1. Generar respuesta con Gemini 3.6 Flash
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
-        # 2. Generar audio con ElevenLabs
+        # 2. Generar audio con ElevenLabs (MP3 base)
         audio_stream = eleven_client.text_to_speech.convert(
             text=respuesta_texto,
             voice_id="OqoIeNOqjjjkwABBwfFl",
@@ -230,13 +255,14 @@ def procesar(payload: PromptRequest):
         audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
+        wav_bytes = wav_io.getvalue()
 
-        # 4. Subir a Google Drive compartido y registrar en Sheets
+        # 4. Subir a Google Drive el archivo .wav y registrar en Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        subir_a_drive_y_registrar(user_text, wav_io.getvalue(), filename)
+        subir_a_drive_y_registrar(user_text, wav_bytes, filename)
 
-        # 5. Retornar respuesta al cliente
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+        # 5. Retornar el WAV en Base64
+        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
 
         return {
             "status": "ok",
