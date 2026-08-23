@@ -53,7 +53,11 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
                 model="gemini-3.6-flash",
                 contents=user_text,
                 config={
-                    "system_instruction": "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
+                    "system_instruction": (
+                        "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
+                        "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
+                        "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
+                    )
                 }
             )
             if response and response.text:
