@@ -3,7 +3,6 @@ import json
 import datetime
 import io
 import base64
-import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -11,8 +10,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pydub import AudioSegment
 from google import genai
-from elevenlabs import ElevenLabs
 from supabase import create_client, Client
+from elevenlabs import ElevenLabs
 
 app = FastAPI()
 
@@ -58,7 +57,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",  # Modelo oficial activo requerido
+                model="gemini-3.6-flash",
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
@@ -74,16 +73,16 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' de Supabase sin errores de sintaxis JSON."""
+    """Sube el audio al bucket de Supabase de forma ultra limpia sin metadatos que rompan el JSON."""
     try:
         if not supabase:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
+        # Subida directa evitando diccionarios complejos de file_options que causaban el error 400
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
-            file=wav_bytes,
-            file_options={"content-type": "audio/wav"}
+            file=wav_bytes
         )
 
         public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
@@ -216,7 +215,7 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
 
-        # 4. Subir a Supabase Storage y registrar en Google Sheets
+        # 4. Subir a Supabase Storage (sin opciones JSON conflictivas) y registrar en Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
         audio_link = subir_a_supabase(wav_io.getvalue(), filename)
         registrar_en_sheets(user_text, audio_link)
