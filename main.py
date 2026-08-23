@@ -20,34 +20,34 @@ app = FastAPI()
 DB_FILE = "jarvis_chats.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    # Tabla de sesiones de chat
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Tabla de mensajes dentro de cada chat
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER,
-            sender TEXT,
-            text TEXT,
-            audio_b64 TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (session_id) REFERENCES sessions (id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                sender TEXT,
+                text TEXT,
+                audio_b64 TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions (id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Error inicializando base de datos: {e}")
 
 init_db()
 
-# Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
@@ -70,25 +70,23 @@ single_key = os.getenv("GEMINI_API_KEY")
 if single_key and single_key.strip() not in GEMINI_KEYS:
     GEMINI_KEYS.insert(0, single_key.strip())
 
-if not GEMINI_KEYS:
-    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas.")
-
-# Inicializar ElevenLabs
-eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+# Inicializar ElevenLabs con manejo de errores defensivo
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
 
 class PromptRequest(BaseModel):
     text: str
     session_id: int = None
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación segura de keys."""
     if not GEMINI_KEYS:
-        raise ValueError("No hay API keys de Gemini disponibles.")
+        return "⚠️ Error: No hay API keys de Gemini configuradas en el entorno."
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
+            # Usando Gemini 3.6 Flash
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
@@ -103,13 +101,12 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             ultimo_error = e
             continue
 
-    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+    return f"⚠️ Error generando respuesta con Gemini: {str(ultimo_error)}"
 
 def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
-    """Sube el audio WAV directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
+    """Sube el audio WAV a Google Drive y registra en Google Sheets de forma segura sin bloquear."""
     try:
         if not CREDENTIALS_JSON:
-            print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
             return "No disponible"
 
         creds_dict = json.loads(CREDENTIALS_JSON)
@@ -141,8 +138,8 @@ def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
                 fileId=file_id,
                 body={'role': 'reader', 'type': 'anyone'}
             ).execute()
-        except Exception as perm_err:
-            print(f"⚠️ No se pudo hacer público el archivo en Drive: {perm_err}")
+        except Exception:
+            pass
 
         sheet_service = build('sheets', 'v4', credentials=creds)
         valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
@@ -154,41 +151,37 @@ def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
         ).execute()
 
         return audio_link
-
     except Exception as e:
-        print(f"❌ Error al subir a Drive o Sheets: {e}")
+        print(f"⚠️ Aviso no crítico (Drive/Sheets): {e}")
         return "Error al guardar en Drive"
 
-# ==================== ENDPOINTS DE LA API ====================
+# ==================== ENDPOINTS ====================
 
 @app.get("/sessions")
 def get_sessions():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, title, created_at FROM sessions ORDER BY id DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, created_at FROM sessions ORDER BY id DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
+    except Exception as e:
+        print(f"Error en /sessions: {e}")
+        return []
 
 @app.get("/sessions/{session_id}")
 def get_session_messages(session_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT sender, text, audio_b64 FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"sender": r[0], "text": r[1], "audio_b64": r[2]} for r in rows]
-
-@app.post("/sessions")
-def create_session(payload: PromptRequest):
-    title = payload.text[:30] + "..." if payload.text else "Nueva Conversación"
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO sessions (title) VALUES (?)", (title,))
-    session_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return {"session_id": session_id, "title": title}
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT sender, text, audio_b64 FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"sender": r[0], "text": r[1], "audio_b64": r[2]} for r in rows]
+    except Exception as e:
+        print(f"Error en /sessions/{session_id}: {e}")
+        return []
 
 @app.post("/procesar")
 def procesar(payload: PromptRequest):
@@ -199,42 +192,47 @@ def procesar(payload: PromptRequest):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
 
-        # Si no hay sesión activa, creamos una nueva
         if not session_id:
             title = user_text[:30] + "..." if len(user_text) > 30 else user_text
             cursor.execute("INSERT INTO sessions (title) VALUES (?)", (title,))
             session_id = cursor.lastrowid
 
-        # Guardar mensaje del usuario
         cursor.execute("INSERT INTO messages (session_id, sender, text, audio_b64) VALUES (?, ?, ?, ?)",
                        (session_id, 'user', user_text, None))
         conn.commit()
         conn.close()
 
-        # 1. Generar respuesta con Gemini 3.6 Flash
+        # 1. Generar respuesta con Gemini
+        print(f"🤖 Consultando a Gemini para: '{user_text}'")
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
-        # 2. Generar audio con ElevenLabs
-        audio_stream = eleven_client.text_to_speech.convert(
-            text=respuesta_texto,
-            voice_id="OqoIeNOqjjjkwABBwfFl",
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128"
-        )
-        audio_bytes = b"".join(chunk for chunk in audio_stream)
+        # 2. Generar audio con ElevenLabs (con respaldo en caso de fallo de cuota/clave)
+        audio_b64 = ""
+        wav_bytes = b""
+        try:
+            if eleven_client:
+                print("🎙️ Generando audio con ElevenLabs...")
+                audio_stream = eleven_client.text_to_speech.convert(
+                    text=respuesta_texto[:500],
+                    voice_id="OqoIeNOqjjjkwABBwfFl",
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128"
+                )
+                audio_bytes = b"".join(chunk for chunk in audio_stream)
+                
+                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+                wav_io = io.BytesIO()
+                audio_wav.export(wav_io, format="wav")
+                wav_bytes = wav_io.getvalue()
+                audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+        except Exception as audio_err:
+            print(f"⚠️ Error generando audio con ElevenLabs (continuando solo con texto): {audio_err}")
 
-        # 3. Convertir MP3 a WAV
-        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-        wav_io = io.BytesIO()
-        audio_wav.export(wav_io, format="wav")
-        wav_bytes = wav_io.getvalue()
-
-        # 4. Subir a Google Drive y registrar en Sheets
-        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        subir_a_drive_y_registrar(user_text, wav_bytes, filename)
-
-        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+        # 3. Subir a Drive (si hay audio)
+        if wav_bytes:
+            filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
+            subir_a_drive_y_registrar(user_text, wav_bytes, filename)
 
         # Guardar respuesta de JARVIS
         conn = sqlite3.connect(DB_FILE)
@@ -349,9 +347,7 @@ def home():
             <div class="search-box" style="margin-top: 15px;">
                 <input type="text" id="search-sessions" placeholder="Buscar en historial..." oninput="filtrarHistorial(this.value)" />
             </div>
-            <div class="sessions-list" id="sessions-list">
-                <!-- Se cargan dinámicamente -->
-            </div>
+            <div class="sessions-list" id="sessions-list"></div>
         </div>
 
         <!-- CONTENEDOR PRINCIPAL -->
@@ -389,7 +385,6 @@ def home():
             let currentAudio = null;
             let allSessions = [];
 
-            // Inicializar historial al cargar
             window.onload = async () => {
                 await cargarHistorial();
             };
@@ -457,7 +452,6 @@ def home():
                 textarea.style.height = textarea.scrollHeight + 'px';
             }
 
-            // Manejo de Voz
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (SpeechRecognition) {
                 recognition = new SpeechRecognition();
@@ -526,31 +520,45 @@ def home():
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({ text: text, session_id: currentSessionId })
                     });
+                    
+                    if (!res.ok) {
+                        throw new Error("Error en el servidor backend.");
+                    }
+
                     const data = await res.json();
 
                     if (data.status === "ok") {
                         currentSessionId = data.session_id;
                         await cargarHistorial();
-                        document.getElementById('current-title').innerText = allSessions.find(s => s.id === currentSessionId)?.title || "Chat";
+                        const activeSes = allSessions.find(s => s.id === currentSessionId);
+                        if(activeSes) {
+                            document.getElementById('current-title').innerText = activeSes.title;
+                        }
 
-                        const audioSrc = "data:audio/wav;base64," + data.audio_b64;
-                        appendMessageUI(data.respuesta_texto, 'jarvis', data.audio_b64);
+                        appendMessageUI(data.respuesta_texto, 'jarvis', data.audio_base64);
 
-                        currentAudio = new Audio(audioSrc);
-                        document.getElementById('status').innerText = "JARVIS hablando...";
-                        currentAudio.play().catch(e => console.log(e));
+                        if (data.audio_base64) {
+                            const audioSrc = "data:audio/wav;base64," + data.audio_base64;
+                            currentAudio = new Audio(audioSrc);
+                            document.getElementById('status').innerText = "JARVIS hablando...";
+                            currentAudio.play().catch(e => console.log(e));
 
-                        currentAudio.onended = () => {
-                            currentAudio = null;
-                            if (isConversing) {
-                                try { recognition.start(); } catch(e){}
-                            } else {
-                                document.getElementById('status').innerText = "En espera";
-                            }
-                        };
+                            currentAudio.onended = () => {
+                                currentAudio = null;
+                                if (isConversing) {
+                                    try { recognition.start(); } catch(e){}
+                                } else {
+                                    document.getElementById('status').innerText = "En espera";
+                                }
+                            };
+                        } else {
+                            document.getElementById('status').innerText = "En espera";
+                            if (isConversing) { try { recognition.start(); } catch(e){} }
+                        }
                     }
                 } catch (e) {
                     document.getElementById('status').innerText = "Error en procesamiento";
+                    appendMessageUI("⚠️ Ocurrió un error al procesar tu solicitud en el servidor.", 'jarvis');
                     console.error(e);
                     if (isConversing) { setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000); }
                 }
@@ -567,26 +575,21 @@ def home():
                 if (sender === 'user') {
                     bubble.innerText = text;
                 } else {
-                    // Renderizar Markdown y resaltar código con estilo Gemini
                     bubble.innerHTML = marked.parse(text);
                     
-                    // Añadir botón de copiar a bloques de código
                     bubble.querySelectorAll('pre').forEach(pre => {
-                        const codeElem = pre.querySelector('code');
                         const header = document.createElement('div');
                         header.className = 'code-header';
                         header.innerHTML = `<span>código</span> <button class="copy-btn" onclick="copiarCodigo(this)">Copiar</button>`;
                         pre.parentNode.insertBefore(header, pre);
                     });
 
-                    // Añadir botón para generar PDF de la respuesta
                     const pdfBtn = document.createElement('button');
                     pdfBtn.className = 'pdf-btn';
                     pdfBtn.innerHTML = '📄 Descargar respuesta en PDF';
                     pdfBtn.onclick = () => generarPDF(text);
                     bubble.appendChild(pdfBtn);
 
-                    // Si hay audio, opción de respaldo
                     if (audioB64) {
                         const audioSrc = "data:audio/wav;base64," + audioB64;
                         const dl = document.createElement('a');
