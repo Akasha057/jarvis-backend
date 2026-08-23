@@ -49,17 +49,16 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Genera respuesta con Gemini aplicando rotación de keys de forma limpia."""
+    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación de keys."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
-            # Inicialización estándar corregida para evitar el error 401
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-2.5-flash",  # Usamos el modelo estándar y estable actual
+                model="gemini-3.6-flash",  # Modelo oficial activo requerido
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
@@ -81,7 +80,6 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
             print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida limpia con sintaxis de diccionario estándar compatible con el SDK
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes,
@@ -200,7 +198,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
 
-        # 1. Generar respuesta con Gemini corregido
+        # 1. Generar respuesta con Gemini 3.6 Flash
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs
@@ -218,7 +216,7 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
 
-        # 4. Subir a Supabase Storage corregido y registrar en Google Sheets
+        # 4. Subir a Supabase Storage y registrar en Google Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
         audio_link = subir_a_supabase(wav_io.getvalue(), filename)
         registrar_en_sheets(user_text, audio_link)
