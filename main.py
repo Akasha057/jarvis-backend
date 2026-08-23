@@ -1,16 +1,16 @@
-import os
-import json
+import base64
 import datetime
 import io
-import base64
+import json
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from pydub import AudioSegment
 from google import genai
-from supabase import create_client, Client
 from elevenlabs import ElevenLabs
 
 app = FastAPI()
@@ -18,11 +18,7 @@ app = FastAPI()
 # Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
-
-# Configuración de Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") # ID de la carpeta en Drive donde se guardarán los audios
 
 # Cargar la lista de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
@@ -55,7 +51,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=api_key.strip())
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
@@ -72,35 +68,49 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
 
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio a Supabase de forma segura sin interrumpir el flujo principal si hay un error de tipo."""
-    try:
-        if not supabase:
-            return "No disponible (Sin credenciales de Supabase)"
-
-        # Intento de subida con el cliente de Supabase
-        supabase.storage.from_("jarvis-audios").upload(
-            path=filename,
-            file=wav_bytes
-        )
-        return supabase.storage.from_("jarvis-audios").get_public_url(filename)
-    except Exception as e:
-        print(f"⚠️ Aviso no crítico en Supabase (continuando flujo): {e}")
-        return "No disponible temporalmente en Supabase"
-
-def registrar_en_sheets(texto: str, audio_link: str):
-    """Registra el texto y el enlace en Google Sheets."""
+def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
+    """Sube el audio directamente a Google Drive y registra los datos en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
-            return
+            return "No disponible"
 
         creds_dict = json.loads(CREDENTIALS_JSON)
         creds = service_account.Credentials.from_service_account_info(
             creds_dict, 
-            scopes=['https://www.googleapis.com/auth/spreadsheets']
+            scopes=[
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive.file'
+            ]
         )
 
+        # 1. Subir a Google Drive
+        drive_service = build('drive', 'v3', credentials=creds)
+        file_metadata = {
+            'name': filename,
+            'parents': [DRIVE_FOLDER_ID] if DRIVE_FOLDER_ID else []
+        }
+        media = MediaIoBaseUpload(io.BytesIO(wav_bytes), mimetype='audio/wav', resumable=True)
+        
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
+
+        file_id = file.get('id')
+        audio_link = file.get('webViewLink')
+
+        # Hacer el archivo público en Drive para que se pueda reproducir/ver fácil (Opcional)
+        try:
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'role': 'reader', 'type': 'anyone'}
+            ).execute()
+        except Exception as perm_err:
+            print(f"⚠️ No se pudo hacer público el archivo en Drive: {perm_err}")
+
+        # 2. Registrar en Google Sheets
         sheet_service = build('sheets', 'v4', credentials=creds)
         valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
         sheet_service.spreadsheets().values().append(
@@ -110,8 +120,11 @@ def registrar_en_sheets(texto: str, audio_link: str):
             body={"values": valores}
         ).execute()
 
+        return audio_link
+
     except Exception as e:
-        print(f"❌ Error crítico al registrar en Sheets: {e}")
+        print(f"❌ Error al subir a Drive o Sheets: {e}")
+        return "Error al guardar en Drive"
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -194,7 +207,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
 
-        # 1. Generar respuesta con Gemini
+        # 1. Generar respuesta con Gemini 3.6 Flash
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs
@@ -212,12 +225,11 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
 
-        # 4. Subir a Supabase (protegido para que no rompa si hay error de tipo) y registrar en Sheets
+        # 4. Subir a Google Drive y registrar en Sheets en un solo paso limpio
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        audio_link = subir_a_supabase(wav_io.getvalue(), filename)
-        registrar_en_sheets(user_text, audio_link)
+        subir_a_drive_y_registrar(user_text, wav_io.getvalue(), filename)
 
-        # 5. Retornar respuesta al cliente para que hable y muestre texto
+        # 5. Retornar respuesta al cliente
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
 
         return {
