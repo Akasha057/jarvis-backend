@@ -75,7 +75,7 @@ def home():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. - Omni Chat</title>
         <!-- Markdown Parser & Code Highlighter -->
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
         <!-- jsPDF para descarga de PDFs -->
@@ -347,24 +347,29 @@ def home():
                     const data = await response.json();
 
                     if (data.status === "ok") {
-                        const audioSrc = "data:audio/wav;base64," + data.audio_base64;
+                        const audioSrc = data.audio_base64 ? "data:audio/wav;base64," + data.audio_base64 : null;
                         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
                         const fileName = `jarvis_${timestamp}.wav`;
 
                         appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, fileName);
 
-                        currentAudio = new Audio(audioSrc);
-                        statusSpan.innerText = "J.A.R.V.I.S. hablando...";
-                        currentAudio.play().catch(e => console.log("Error al reproducir:", e));
+                        if (audioSrc) {
+                            currentAudio = new Audio(audioSrc);
+                            statusSpan.innerText = "J.A.R.V.I.S. hablando...";
+                            currentAudio.play().catch(e => console.log("Error al reproducir:", e));
 
-                        currentAudio.onended = () => {
-                            currentAudio = null;
-                            if (isConversing) {
-                                try { recognition.start(); } catch(e){}
-                            } else {
-                                statusSpan.innerText = "Inactivo";
-                            }
-                        };
+                            currentAudio.onended = () => {
+                                currentAudio = null;
+                                if (isConversing) {
+                                    try { recognition.start(); } catch(e){}
+                                } else {
+                                    statusSpan.innerText = "Inactivo";
+                                }
+                            };
+                        } else {
+                            statusSpan.innerText = "Inactivo";
+                            if (isConversing) { try { recognition.start(); } catch(e){} }
+                        }
                     }
                 } catch (err) {
                     statusSpan.innerText = "Error: " + err.message;
@@ -386,7 +391,12 @@ def home():
                 if (sender === 'user') {
                     bubble.innerText = text;
                 } else {
-                    bubble.innerHTML = marked.parse(text);
+                    // Verificación defensiva de marked
+                    if (typeof marked !== 'undefined') {
+                        bubble.innerHTML = marked.parse(text);
+                    } else {
+                        bubble.innerText = text;
+                    }
                     
                     bubble.querySelectorAll('pre').forEach(pre => {
                         const header = document.createElement('div');
@@ -416,7 +426,9 @@ def home():
                 wrapper.appendChild(bubble);
                 chatContainer.appendChild(wrapper);
                 chatContainer.scrollTop = chatContainer.scrollHeight;
-                hljs.highlightAll();
+                if (typeof hljs !== 'undefined') {
+                    hljs.highlightAll();
+                }
             }
 
             function copiarCodigo(btn) {
@@ -441,7 +453,7 @@ def home():
     </body>
     </html>
     """
-
+    
 @app.post("/procesar")
 def procesar(payload: PromptRequest):
     try:
