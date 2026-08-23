@@ -81,7 +81,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
@@ -147,7 +147,7 @@ def procesar(payload: PromptRequest):
         conn.commit()
         conn.close()
 
-        # 1. Generar respuesta con Gemini
+        # 1. Generar respuesta con Gemini (gemini-3.6-flash)
         print(f"🤖 Consultando a Gemini para: '{user_text}'")
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
