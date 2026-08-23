@@ -3,48 +3,22 @@ import datetime
 import io
 import json
 import os
-import sqlite3
-from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
 
 app = FastAPI()
 
-# ==================== CONFIGURACIÓN DE BASE DE DATOS (HISTORIAL) ====================
-DB_FILE = "jarvis_chats.db"
-
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER,
-                sender TEXT,
-                text TEXT,
-                audio_b64 TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (session_id) REFERENCES sessions (id)
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"⚠️ Error inicializando base de datos: {e}")
-
-init_db()
+# Configuración de credenciales y IDs
+CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 # Carga segura de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
@@ -64,27 +38,29 @@ single_key = os.getenv("GEMINI_API_KEY")
 if single_key and single_key.strip() not in GEMINI_KEYS:
     GEMINI_KEYS.insert(0, single_key.strip())
 
-# Inicializar ElevenLabs con manejo de errores defensivo
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
+if not GEMINI_KEYS:
+    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas.")
+
+# Inicializar ElevenLabs
+eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 class PromptRequest(BaseModel):
     text: str
-    session_id: Optional[Any] = None
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
+    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación segura de keys."""
     if not GEMINI_KEYS:
-        return "⚠️ Error: No hay API keys de Gemini configuradas en el entorno."
+        raise ValueError("No hay API keys de Gemini disponibles.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 contents=user_text,
                 config={
-                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
+                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
                 }
             )
             if response and response.text:
@@ -94,101 +70,61 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             ultimo_error = e
             continue
 
-    return f"⚠️ Error generando respuesta con Gemini: {str(ultimo_error)}"
+    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-# ==================== ENDPOINTS DE LA API ====================
-
-@app.get("/sessions")
-def get_sessions():
+def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
+    """Sube el audio WAV directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, title, created_at FROM sessions ORDER BY id DESC")
-        rows = cursor.fetchall()
-        conn.close()
-        return [{"id": r[0], "title": r[1], "created_at": r[2]} for r in rows]
-    except Exception as e:
-        print(f"Error en /sessions: {e}")
-        return []
+        if not CREDENTIALS_JSON:
+            print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
+            return "No disponible"
 
-@app.get("/sessions/{session_id}")
-def get_session_messages(session_id: int):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT sender, text, audio_b64 FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [{"sender": r[0], "text": r[1], "audio_b64": r[2]} for r in rows]
-    except Exception as e:
-        print(f"Error en /sessions/{session_id}: {e}")
-        return []
+        creds_dict = json.loads(CREDENTIALS_JSON)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, 
+            scopes=[
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive.file'
+            ]
+        )
 
-@app.post("/procesar")
-def procesar(payload: PromptRequest):
-    try:
-        user_text = payload.text
-        
-        session_id = None
-        if payload.session_id is not None and str(payload.session_id).isdigit():
-            session_id = int(payload.session_id)
+        drive_service = build('drive', 'v3', credentials=creds)
+        file_metadata = {'name': filename}
+        if DRIVE_FOLDER_ID:
+            file_metadata['parents'] = [DRIVE_FOLDER_ID]
 
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
+        media = MediaIoBaseUpload(io.BytesIO(wav_bytes), mimetype='audio/wav', resumable=True)
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
 
-        if not session_id:
-            title = user_text[:30] + "..." if len(user_text) > 30 else user_text
-            cursor.execute("INSERT INTO sessions (title) VALUES (?)", (title,))
-            session_id = cursor.lastrowid
+        file_id = file.get('id')
+        audio_link = file.get('webViewLink')
 
-        cursor.execute("INSERT INTO messages (session_id, sender, text, audio_b64) VALUES (?, ?, ?, ?)",
-                       (session_id, 'user', user_text, None))
-        conn.commit()
-        conn.close()
-
-        # 1. Generar respuesta con Gemini
-        print(f"🤖 Consultando a Gemini para: '{user_text}'")
-        respuesta_texto = generar_respuesta_con_fallback(user_text)
-
-        # 2. Generar audio con ElevenLabs y convertir a WAV
-        audio_b64 = ""
         try:
-            if eleven_client:
-                print("🎙️ Generando audio con ElevenLabs...")
-                audio_stream = eleven_client.text_to_speech.convert(
-                    text=respuesta_texto[:500],
-                    voice_id="OqoIeNOqjjjkwABBwfFl",
-                    model_id="eleven_multilingual_v2",
-                    output_format="mp3_44100_128"
-                )
-                audio_bytes = b"".join(chunk for chunk in audio_stream)
-                
-                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-                wav_io = io.BytesIO()
-                audio_wav.export(wav_io, format="wav")
-                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
-        except Exception as audio_err:
-            print(f"⚠️ Error generando audio con ElevenLabs: {audio_err}")
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'role': 'reader', 'type': 'anyone'}
+            ).execute()
+        except Exception as perm_err:
+            print(f"⚠️ No se pudo hacer público el archivo en Drive: {perm_err}")
 
-        # Guardar respuesta de JARVIS en la base de datos local
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO messages (session_id, sender, text, audio_b64) VALUES (?, ?, ?, ?)",
-                       (session_id, 'jarvis', respuesta_texto, audio_b64))
-        conn.commit()
-        conn.close()
+        sheet_service = build('sheets', 'v4', credentials=creds)
+        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
+        sheet_service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID, 
+            range="A1", 
+            valueInputOption="RAW",
+            body={"values": valores}
+        ).execute()
 
-        return {
-            "status": "ok",
-            "session_id": session_id,
-            "respuesta_texto": respuesta_texto,
-            "audio_base64": audio_b64
-        }
+        return audio_link
 
     except Exception as e:
-        print(f"❌ Error crítico en /procesar: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error al subir a Drive o Sheets: {e}")
+        return "Error al guardar en Drive"
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -198,372 +134,251 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>JARVIS - Galactic Studio</title>
-        <!-- Markdown Parser & Code Highlighter -->
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-        <!-- jsPDF para descarga de PDFs -->
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-        
+        <title>JARVIS - Omni Chat</title>
         <style>
-            :root {
-                --bg-main: #0b1329;
-                --bg-sidebar: #070d1d;
-                --bg-input: #121c38;
-                --text-main: #e0e6ed;
-                --text-muted: #8a99ad;
-                --accent: #00f2ff;
-                --accent-hover: #00adb5;
-            }
             * { box-sizing: border-box; }
-            body { background: var(--bg-main); color: var(--text-main); font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
+            body { background: #0b141a; color: #e9edef; font-family: 'Segoe UI', Courier, monospace; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+            header { background: #202c33; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a3942; color: #00ffcc; font-weight: bold; font-size: 18px; }
+            #chat-container { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; }
+            .message { max-width: 80%; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
+            .user-msg { background: #005c4b; align-self: flex-end; border-top-right-radius: 0; }
+            .jarvis-msg { background: #202c33; align-self: flex-start; border-top-left-radius: 0; border: 1px solid #2a3942; color: #00ffcc; }
             
-            /* Sidebar */
-            #sidebar { width: 260px; background: var(--bg-sidebar); display: flex; flex-direction: column; border-right: 1px solid #1a294f; transition: transform 0.3s ease; z-index: 10; }
-            #sidebar.collapsed { transform: translateX(-260px); position: absolute; height: 100%; }
-            .sidebar-header { padding: 15px; display: flex; align-items: center; justify-content: space-between; }
-            .new-chat-btn { background: var(--bg-input); border: 1px solid #1e3264; color: var(--text-main); padding: 10px 15px; border-radius: 20px; cursor: pointer; font-size: 14px; width: 90%; margin: 0 auto; text-align: left; display: flex; align-items: center; gap: 8px; }
-            .new-chat-btn:hover { background: #1a2d5c; }
+            /* Panel inferior adaptable a móviles */
+            footer { background: #202c33; padding: 10px 15px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #2a3942; }
+            .controls-row { display: flex; align-items: center; gap: 8px; width: 100%; }
             
-            .search-box { padding: 0 15px 10px 15px; }
-            .search-box input { width: 100%; background: var(--bg-input); border: 1px solid #1e3264; padding: 8px 12px; border-radius: 8px; color: white; font-size: 13px; outline: none; }
+            input[type="text"] { flex: 1; background: #2a3942; border: none; padding: 12px; border-radius: 20px; color: white; font-size: 15px; outline: none; }
+            input[type="text"]::placeholder { color: #8696a0; }
             
-            .sessions-list { flex: 1; overflow-y: auto; padding: 0 10px; }
-            .session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
-            .session-item:hover { background: #121e3d; }
-            .session-item.active { background: #1b3169; color: var(--accent); }
-
-            /* Main Content */
-            #main { flex: 1; display: flex; flex-direction: column; height: 100vh; position: relative; }
-            header { padding: 15px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-main); border-bottom: 1px solid #1a2d5c; }
-            .toggle-sidebar-btn { background: none; border: none; color: var(--text-main); font-size: 20px; cursor: pointer; }
+            button { background: #00a884; border: none; color: white; padding: 10px 16px; font-size: 14px; cursor: pointer; border-radius: 20px; font-weight: bold; transition: 0.2s; white-space: nowrap; }
+            button:hover { background: #02906f; }
+            button.active { background: #d9534f; }
+            #mic-btn { border-radius: 50%; width: 45px; height: 45px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
             
-            #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; max-width: 800px; width: 100%; margin: 0 auto; }
-            .message-wrapper { display: flex; flex-direction: column; max-width: 85%; }
-            .message-wrapper.user { align-self: flex-end; }
-            .message-wrapper.jarvis { align-self: flex-start; width: 100%; }
-            
-            .bubble { padding: 14px 18px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
-            .user .bubble { background: #1a2d5c; color: #fff; border-bottom-right-radius: 4px; border: 1px solid #284485; }
-            .jarvis .bubble { background: transparent; color: var(--text-main); padding-left: 0; }
-            
-            /* Estilos para bloques de código */
-            pre { background: #060a17 !important; padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #1e3264; }
-            code { font-family: 'Courier New', Courier, monospace; }
-            .code-header { background: #0c1429; padding: 5px 10px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-top-left-radius: 8px; border-top-right-radius: 8px; border: 1px solid #1e3264; border-bottom: none; }
-            .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; }
-
-            /* Footer de entrada */
-            footer { padding: 15px; background: var(--bg-main); display: flex; flex-direction: column; align-items: center; gap: 8px; }
-            .input-box-container { background: var(--bg-input); border-radius: 24px; padding: 8px 15px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 800px; border: 1px solid #1e3264; }
-            .input-box-container:focus-within { border-color: var(--accent); }
-            
-            textarea { flex: 1; background: none; border: none; color: white; font-size: 15px; outline: none; resize: none; max-height: 120px; font-family: inherit; }
-            textarea::placeholder { color: var(--text-muted); }
-            
-            .action-buttons { display: flex; align-items: center; gap: 8px; }
-            .icon-btn { background: none; border: none; color: var(--text-main); font-size: 18px; cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-            .icon-btn:hover { background: rgba(0,242,255,0.1); }
-            .icon-btn.active { color: #ff4d4d; background: rgba(255,77,77,0.1); }
-            
-            #status { font-size: 11px; color: var(--text-muted); text-align: center; }
-            .pdf-btn { margin-top: 8px; background: #121c38; border: 1px solid var(--accent); color: var(--accent); padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
-            .pdf-btn:hover { background: var(--accent); color: #0b1329; }
+            #status { font-size: 12px; color: #8696a0; text-align: center; }
+            a.download-link { display: block; margin-top: 4px; font-size: 11px; color: #53bdeb; text-decoration: underline; }
         </style>
     </head>
     <body>
+        <header>
+            <span>J.A.R.V.I.S.</span>
+            <span id="status">Inactivo</span>
+        </header>
         
-        <!-- BARRA LATERAL (HISTORIAL) -->
-        <div id="sidebar">
-            <div class="sidebar-header">
-                <span style="font-weight: bold; color: var(--accent);">J.A.R.V.I.S. Galactic</span>
-            </div>
-            <button class="new-chat-btn" onclick="nuevaConversacion()">➕ Nueva conversación</button>
-            <div class="search-box" style="margin-top: 15px;">
-                <input type="text" id="search-sessions" placeholder="Buscar en historial..." oninput="filtrarHistorial(this.value)" />
-            </div>
-            <div class="sessions-list" id="sessions-list"></div>
+        <div id="chat-container">
+            <div class="message jarvis-msg">Sistema enlazado. Puedes hablar por voz, escribir por teclado o usar el modo continuo.</div>
         </div>
 
-        <!-- CONTENEDOR PRINCIPAL -->
-        <div id="main">
-            <header>
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <button class="toggle-sidebar-btn" onclick="toggleSidebar()">☰</button>
-                    <span id="current-title" style="font-weight: 500; font-size: 16px;">Nueva Conversación</span>
-                </div>
-                <div id="status">Sistema en espera</div>
-            </header>
-
-            <div id="chat-container">
-                <div class="message-wrapper jarvis">
-                    <div class="bubble">Hola Santino. Conexión establecida con el núcleo galáctico. ¿Qué desplegamos hoy?</div>
-                </div>
+        <footer>
+            <div class="controls-row">
+                <input type="text" id="text-input" placeholder="Escribe un mensaje a JARVIS..." />
+                <button id="send-btn">Enviar</button>
+                <button id="mic-btn" title="Activar/Desactivar Voz Continua">🎙️</button>
             </div>
-
-            <footer>
-                <div class="input-box-container">
-                    <textarea id="user-input" rows="1" placeholder="Comunícate con JARVIS..." oninput="autoExpand(this)"></textarea>
-                    <div class="action-buttons">
-                        <button class="icon-btn" id="mic-btn" onclick="toggleVoz()" title="Modo Voz Continua">🎙️</button>
-                        <button class="icon-btn" onclick="enviarMensaje()" title="Enviar">🚀</button>
-                    </div>
-                </div>
-                <div style="font-size: 11px; color: var(--text-muted);">JARVIS Galactic Edition - Gemini Bridge</div>
-            </footer>
-        </div>
+        </footer>
 
         <script>
-            let currentSessionId = null;
+            const textInput = document.getElementById('text-input');
+            const sendBtn = document.getElementById('send-btn');
+            const micBtn = document.getElementById('mic-btn');
+            const statusSpan = document.getElementById('status');
+            const chatContainer = document.getElementById('chat-container');
+
             let isConversing = false;
             let recognition = null;
-            let currentAudio = null;
-            let allSessions = [];
-
-            window.onload = async () => {
-                await cargarHistorial();
-            };
-
-            async function cargarHistorial() {
-                try {
-                    const res = await fetch('/sessions');
-                    allSessions = await res.json();
-                    renderizarHistorial(allSessions);
-                } catch (e) {
-                    console.error("Error al cargar historial:", e);
-                }
-            }
-
-            function renderizarHistorial(sessions) {
-                const list = document.getElementById('sessions-list');
-                list.innerHTML = '';
-                sessions.forEach(s => {
-                    const div = document.createElement('div');
-                    div.className = `session-item ${s.id === currentSessionId ? 'active' : ''}`;
-                    div.innerText = s.title;
-                    div.onclick = () => seleccionarSesion(s.id, s.title);
-                    list.appendChild(div);
-                });
-            }
-
-            function filtrarHistorial(query) {
-                const filtradas = allSessions.filter(s => s.title.toLowerCase().includes(query.toLowerCase()));
-                renderizarHistorial(filtradas);
-            }
-
-            async function seleccionarSesion(id, title) {
-                currentSessionId = id;
-                document.getElementById('current-title').innerText = title;
-                renderizarHistorial(allSessions);
-
-                const res = await fetch(`/sessions/${id}`);
-                const messages = await res.json();
-
-                const chatContainer = document.getElementById('chat-container');
-                chatContainer.innerHTML = '';
-
-                messages.forEach(m => {
-                    appendMessageUI(m.text, m.sender === 'user' ? 'user' : 'jarvis', m.audio_b64);
-                });
-            }
-
-            function nuevaConversacion() {
-                currentSessionId = null;
-                document.getElementById('current-title').innerText = "Nueva Conversación";
-                document.getElementById('chat-container').innerHTML = `
-                    <div class="message-wrapper jarvis">
-                        <div class="bubble">Nueva sesión iniciada. ¿En qué te asisto?</div>
-                    </div>
-                `;
-                renderizarHistorial(allSessions);
-            }
-
-            function toggleSidebar() {
-                document.getElementById('sidebar').classList.toggle('collapsed');
-            }
-
-            function autoExpand(textarea) {
-                textarea.style.height = 'auto';
-                textarea.style.height = textarea.scrollHeight + 'px';
-            }
+            let currentAudio = null; // Referencia al audio actual para poder interrumpirlo
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (SpeechRecognition) {
+            if (!SpeechRecognition) {
+                statusSpan.innerText = "Voz no soportada en este navegador.";
+                micBtn.style.display = 'none';
+            } else {
                 recognition = new SpeechRecognition();
                 recognition.lang = 'es-ES';
                 recognition.interimResults = false;
                 recognition.continuous = false;
 
-                recognition.onstart = () => { document.getElementById('status').innerText = "Escuchando..."; };
+                recognition.onstart = () => {
+                    statusSpan.innerText = "Escuchando...";
+                    micBtn.classList.add('active');
+                };
+
                 recognition.onresult = async (event) => {
                     const transcript = event.results[0][0].transcript;
-                    await enviarTexto(transcript);
+                    await enviarMensaje(transcript);
                 };
+
+                recognition.onerror = (event) => {
+                    console.log("Error de voz:", event.error);
+                    if (isConversing && event.error !== 'aborted') {
+                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 1000);
+                    }
+                };
+
                 recognition.onend = () => {
+                    if (isConversing && statusSpan.innerText === "Escuchando...") {
+                        try { recognition.start(); } catch(e){}
+                    } else if (!isConversing) {
+                        micBtn.classList.remove('active');
+                    }
+                };
+
+                micBtn.onclick = () => {
+                    isConversing = !isConversing;
                     if (isConversing) {
+                        // Si JARVIS está hablando, lo interrumpimos de golpe para escuchar
+                        interrumpirJarvis();
                         try { recognition.start(); } catch(e){}
                     } else {
-                        document.getElementById('status').innerText = "En espera";
+                        statusSpan.innerText = "Inactivo";
+                        micBtn.classList.remove('active');
+                        try { recognition.stop(); } catch(e){}
                     }
                 };
             }
 
-            function toggleVoz() {
-                if (!recognition) {
-                    alert("Tu navegador no soporta reconocimiento de voz.");
-                    return;
-                }
-                isConversing = !isConversing;
-                const micBtn = document.getElementById('mic-btn');
-                if (isConversing) {
-                    micBtn.classList.add('active');
-                    if(currentAudio) currentAudio.pause();
-                    try { recognition.start(); } catch(e){}
-                } else {
-                    micBtn.classList.remove('active');
-                    try { recognition.stop(); } catch(e){}
-                    document.getElementById('status').innerText = "En espera";
-                }
-            }
-
-            async function enviarMensaje() {
-                const textarea = document.getElementById('user-input');
-                const text = textarea.value.trim();
-                if (!text) return;
-                textarea.value = "";
-                textarea.style.height = 'auto';
-                await enviarTexto(text);
-            }
-
-            document.getElementById('user-input').onkeydown = (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    enviarMensaje();
+            // Enviar mensaje por teclado
+            sendBtn.onclick = () => {
+                const text = textInput.value.trim();
+                if (text) {
+                    textInput.value = "";
+                    enviarMensaje(text);
                 }
             };
 
-            async function enviarTexto(text) {
-                if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-                if (isConversing) { try { recognition.stop(); } catch(e){} }
+            textInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    sendBtn.click();
+                }
+            };
 
-                appendMessageUI(text, 'user');
-                document.getElementById('status').innerText = "Procesando...";
+            function interrumpirJarvis() {
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+            }
+
+            async function enviarMensaje(transcript) {
+                // Interrumpir cualquier reproducción anterior de JARVIS (Barge-in)
+                interrumpirJarvis();
+
+                // Si el micrófono estaba escuchando de forma continua, lo frenamos momentáneamente para procesar
+                if (isConversing) {
+                    try { recognition.stop(); } catch(e){}
+                }
+
+                appendMessage(transcript, 'user-msg');
+                statusSpan.innerText = "Procesando...";
 
                 try {
-                    const res = await fetch('/procesar', {
+                    const response = await fetch('/procesar', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ text: text, session_id: currentSessionId })
+                        body: JSON.stringify({text: transcript})
                     });
                     
-                    if (!res.ok) {
-                        throw new Error("Error en el servidor backend.");
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.detail || "Error en el servidor");
                     }
-
-                    const data = await res.json();
-
-                    if (data.status === "ok") {
-                        currentSessionId = data.session_id;
-                        await cargarHistorial();
-                        const activeSes = allSessions.find(s => s.id === currentSessionId);
-                        if(activeSes) {
-                            document.getElementById('current-title').innerText = activeSes.title;
-                        }
-
-                        appendMessageUI(data.respuesta_texto, 'jarvis', data.audio_base64);
-
-                        if (data.audio_base64) {
-                            const audioSrc = "data:audio/wav;base64," + data.audio_base64;
-                            currentAudio = new Audio(audioSrc);
-                            document.getElementById('status').innerText = "JARVIS hablando...";
-                            currentAudio.play().catch(e => console.log(e));
-
-                            currentAudio.onended = () => {
-                                currentAudio = null;
-                                if (isConversing) {
-                                    try { recognition.start(); } catch(e){}
-                                } else {
-                                    document.getElementById('status').innerText = "En espera";
-                                }
-                            };
-                        } else {
-                            document.getElementById('status').innerText = "En espera";
-                            if (isConversing) { try { recognition.start(); } catch(e){} }
-                        }
-                    }
-                } catch (e) {
-                    document.getElementById('status').innerText = "Error en procesamiento";
-                    appendMessageUI("⚠️ Ocurrió un error al procesar tu solicitud en el servidor.", 'jarvis');
-                    console.error(e);
-                    if (isConversing) { setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000); }
-                }
-            }
-
-            function appendMessageUI(text, sender, audioB64 = null) {
-                const container = document.getElementById('chat-container');
-                const wrapper = document.createElement('div');
-                wrapper.className = `message-wrapper ${sender}`;
-
-                const bubble = document.createElement('div');
-                bubble.className = 'bubble';
-
-                if (sender === 'user') {
-                    bubble.innerText = text;
-                } else {
-                    bubble.innerHTML = marked.parse(text);
                     
-                    bubble.querySelectorAll('pre').forEach(pre => {
-                        const header = document.createElement('div');
-                        header.className = 'code-header';
-                        header.innerHTML = `<span>código</span> <button class="copy-btn" onclick="copiarCodigo(this)">Copiar</button>`;
-                        pre.parentNode.insertBefore(header, pre);
-                    });
+                    const data = await response.json();
+                    
+                    if(data.status === "ok") {
+                        const audioSrc = "data:audio/wav;base64," + data.audio_base64;
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        const fileName = `jarvis_${timestamp}.wav`;
 
-                    const pdfBtn = document.createElement('button');
-                    pdfBtn.className = 'pdf-btn';
-                    pdfBtn.innerHTML = '📄 Descargar respuesta en PDF';
-                    pdfBtn.onclick = () => generarPDF(text);
-                    bubble.appendChild(pdfBtn);
-
-                    if (audioB64) {
-                        const audioSrc = "data:audio/wav;base64," + audioB64;
+                        // Descarga automática en segundo plano
                         const dl = document.createElement('a');
                         dl.href = audioSrc;
-                        dl.download = `jarvis_${Date.now()}.wav`;
-                        dl.className = 'pdf-btn';
-                        dl.style.marginLeft = '8px';
-                        dl.style.textDecoration = 'none';
-                        dl.style.display = 'inline-block';
-                        dl.innerText = '📥 Descargar WAV';
-                        bubble.appendChild(dl);
+                        dl.download = fileName;
+                        document.body.appendChild(dl);
+                        dl.click();
+                        document.body.removeChild(dl);
+
+                        const jarvisHtml = `${data.respuesta_texto}<br><a class="download-link" href="${audioSrc}" download="${fileName}">📥 Descargar WAV</a>`;
+                        appendMessage(jarvisHtml, 'jarvis-msg', true);
+
+                        // Reproducir audio de respuesta
+                        currentAudio = new Audio(audioSrc);
+                        statusSpan.innerText = "JARVIS hablando...";
+                        
+                        currentAudio.play().catch(e => console.log("Error al reproducir:", e));
+
+                        currentAudio.onended = () => {
+                            currentAudio = null;
+                            if (isConversing) {
+                                try { recognition.start(); } catch (err) {}
+                            } else {
+                                statusSpan.innerText = "Inactivo";
+                            }
+                        };
+                    }
+                } catch (err) {
+                    statusSpan.innerText = "Error: " + err.message;
+                    console.error(err);
+                    if (isConversing) {
+                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
                     }
                 }
-
-                wrapper.appendChild(bubble);
-                container.appendChild(wrapper);
-                container.scrollTop = container.scrollHeight;
-                hljs.highlightAll();
             }
 
-            function copiarCodigo(btn) {
-                const code = btn.closest('.message-wrapper').querySelector('code').innerText;
-                navigator.clipboard.writeText(code);
-                btn.innerText = '¡Copiado!';
-                setTimeout(() => btn.innerText = 'Copiar', 2000);
-            }
-
-            function generarPDF(text) {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF();
-                doc.setFont("Helvetica", "normal");
-                doc.setFontSize(12);
-                
-                const splitText = doc.splitTextToSize(text.replace(/<[^>]*>?/gm, ''), 180);
-                doc.text(splitText, 15, 20);
-                doc.save(`jarvis_respuesta_${Date.now()}.pdf`);
+            function appendMessage(text, className, isHtml = false) {
+                const div = document.createElement('div');
+                div.className = `message ${className}`;
+                if (isHtml) {
+                    div.innerHTML = text;
+                } else {
+                    div.innerText = text;
+                }
+                chatContainer.appendChild(div);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
             }
         </script>
     </body>
     </html>
     """
+
+@app.post("/procesar")
+def procesar(payload: PromptRequest):
+    try:
+        user_text = payload.text
+
+        # 1. Generar respuesta con Gemini 3.6 Flash
+        respuesta_texto = generar_respuesta_con_fallback(user_text)
+
+        # 2. Generar audio con ElevenLabs
+        audio_stream = eleven_client.text_to_speech.convert(
+            text=respuesta_texto,
+            voice_id="OqoIeNOqjjjkwABBwfFl",
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128"
+        )
+        audio_bytes = b"".join(chunk for chunk in audio_stream)
+
+        # 3. Convertir MP3 a WAV
+        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+        wav_io = io.BytesIO()
+        audio_wav.export(wav_io, format="wav")
+        wav_bytes = wav_io.getvalue()
+
+        # 4. Subir a Google Drive y registrar en Sheets
+        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
+        subir_a_drive_y_registrar(user_text, wav_bytes, filename)
+
+        # 5. Retornar Base64
+        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+
+        return {
+            "status": "ok",
+            "respuesta_texto": respuesta_texto,
+            "audio_base64": audio_b64
+        }
+
+    except Exception as e:
+        print(f"❌ Error crítico en /procesar: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
