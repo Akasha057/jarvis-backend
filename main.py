@@ -81,7 +81,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-2.5-flash",
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
@@ -129,7 +129,6 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
         
-        # Validación y conversión limpia de session_id
         session_id = None
         if payload.session_id is not None and str(payload.session_id).isdigit():
             session_id = int(payload.session_id)
@@ -147,7 +146,7 @@ def procesar(payload: PromptRequest):
         conn.commit()
         conn.close()
 
-        # 1. Generar respuesta con Gemini (gemini-3.6-flash)
+        # 1. Generar respuesta con Gemini
         print(f"🤖 Consultando a Gemini para: '{user_text}'")
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
@@ -199,7 +198,7 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>JARVIS - Gemini Studio</title>
+        <title>JARVIS - Galactic Studio</title>
         <!-- Markdown Parser & Code Highlighter -->
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
@@ -209,36 +208,35 @@ def home():
         
         <style>
             :root {
-                --bg-main: #131314;
-                --bg-sidebar: #1e1f20;
-                --bg-chat: #1e1f20;
-                --bg-input: #2b2c2f;
-                --text-main: #e3e3e3;
-                --text-muted: #8e918f;
-                --accent: #00ffcc;
-                --accent-hover: #00b38f;
+                --bg-main: #0b1329;
+                --bg-sidebar: #070d1d;
+                --bg-input: #121c38;
+                --text-main: #e0e6ed;
+                --text-muted: #8a99ad;
+                --accent: #00f2ff;
+                --accent-hover: #00adb5;
             }
             * { box-sizing: border-box; }
             body { background: var(--bg-main); color: var(--text-main); font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
             
             /* Sidebar */
-            #sidebar { width: 260px; background: var(--bg-sidebar); display: flex; flex-direction: column; border-right: 1px solid #333; transition: transform 0.3s ease; z-index: 10; }
+            #sidebar { width: 260px; background: var(--bg-sidebar); display: flex; flex-direction: column; border-right: 1px solid #1a294f; transition: transform 0.3s ease; z-index: 10; }
             #sidebar.collapsed { transform: translateX(-260px); position: absolute; height: 100%; }
             .sidebar-header { padding: 15px; display: flex; align-items: center; justify-content: space-between; }
-            .new-chat-btn { background: var(--bg-input); border: 1px solid #444; color: var(--text-main); padding: 10px 15px; border-radius: 20px; cursor: pointer; font-size: 14px; width: 90%; margin: 0 auto; text-align: left; display: flex; align-items: center; gap: 8px; }
-            .new-chat-btn:hover { background: #333; }
+            .new-chat-btn { background: var(--bg-input); border: 1px solid #1e3264; color: var(--text-main); padding: 10px 15px; border-radius: 20px; cursor: pointer; font-size: 14px; width: 90%; margin: 0 auto; text-align: left; display: flex; align-items: center; gap: 8px; }
+            .new-chat-btn:hover { background: #1a2d5c; }
             
             .search-box { padding: 0 15px 10px 15px; }
-            .search-box input { width: 100%; background: var(--bg-input); border: none; padding: 8px 12px; border-radius: 8px; color: white; font-size: 13px; outline: none; }
+            .search-box input { width: 100%; background: var(--bg-input); border: 1px solid #1e3264; padding: 8px 12px; border-radius: 8px; color: white; font-size: 13px; outline: none; }
             
             .sessions-list { flex: 1; overflow-y: auto; padding: 0 10px; }
             .session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
-            .session-item:hover { background: #282a2c; }
-            .session-item.active { background: #333538; color: var(--accent); }
+            .session-item:hover { background: #121e3d; }
+            .session-item.active { background: #1b3169; color: var(--accent); }
 
             /* Main Content */
             #main { flex: 1; display: flex; flex-direction: column; height: 100vh; position: relative; }
-            header { padding: 15px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-main); border-bottom: 1px solid #222; }
+            header { padding: 15px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-main); border-bottom: 1px solid #1a2d5c; }
             .toggle-sidebar-btn { background: none; border: none; color: var(--text-main); font-size: 20px; cursor: pointer; }
             
             #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; max-width: 800px; width: 100%; margin: 0 auto; }
@@ -247,18 +245,18 @@ def home():
             .message-wrapper.jarvis { align-self: flex-start; width: 100%; }
             
             .bubble { padding: 14px 18px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
-            .user .bubble { background: #2b2c2f; color: #fff; border-bottom-right-radius: 4px; }
+            .user .bubble { background: #1a2d5c; color: #fff; border-bottom-right-radius: 4px; border: 1px solid #284485; }
             .jarvis .bubble { background: transparent; color: var(--text-main); padding-left: 0; }
             
             /* Estilos para bloques de código */
-            pre { background: #0f1115 !important; padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #333; }
+            pre { background: #060a17 !important; padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #1e3264; }
             code { font-family: 'Courier New', Courier, monospace; }
-            .code-header { background: #1a1d23; padding: 5px 10px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-top-left-radius: 8px; border-top-right-radius: 8px; border: 1px solid #333; border-bottom: none; }
+            .code-header { background: #0c1429; padding: 5px 10px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-top-left-radius: 8px; border-top-right-radius: 8px; border: 1px solid #1e3264; border-bottom: none; }
             .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; }
 
             /* Footer de entrada */
             footer { padding: 15px; background: var(--bg-main); display: flex; flex-direction: column; align-items: center; gap: 8px; }
-            .input-box-container { background: var(--bg-input); border-radius: 24px; padding: 8px 15px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 800px; border: 1px solid #3a3b3f; }
+            .input-box-container { background: var(--bg-input); border-radius: 24px; padding: 8px 15px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 800px; border: 1px solid #1e3264; }
             .input-box-container:focus-within { border-color: var(--accent); }
             
             textarea { flex: 1; background: none; border: none; color: white; font-size: 15px; outline: none; resize: none; max-height: 120px; font-family: inherit; }
@@ -266,12 +264,12 @@ def home():
             
             .action-buttons { display: flex; align-items: center; gap: 8px; }
             .icon-btn { background: none; border: none; color: var(--text-main); font-size: 18px; cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-            .icon-btn:hover { background: rgba(255,255,255,0.1); }
+            .icon-btn:hover { background: rgba(0,242,255,0.1); }
             .icon-btn.active { color: #ff4d4d; background: rgba(255,77,77,0.1); }
             
             #status { font-size: 11px; color: var(--text-muted); text-align: center; }
-            .pdf-btn { margin-top: 8px; background: #222; border: 1px solid var(--accent); color: var(--accent); padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
-            .pdf-btn:hover { background: var(--accent); color: #000; }
+            .pdf-btn { margin-top: 8px; background: #121c38; border: 1px solid var(--accent); color: var(--accent); padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+            .pdf-btn:hover { background: var(--accent); color: #0b1329; }
         </style>
     </head>
     <body>
@@ -279,7 +277,7 @@ def home():
         <!-- BARRA LATERAL (HISTORIAL) -->
         <div id="sidebar">
             <div class="sidebar-header">
-                <span style="font-weight: bold; color: var(--accent);">J.A.R.V.I.S. Studio</span>
+                <span style="font-weight: bold; color: var(--accent);">J.A.R.V.I.S. Galactic</span>
             </div>
             <button class="new-chat-btn" onclick="nuevaConversacion()">➕ Nueva conversación</button>
             <div class="search-box" style="margin-top: 15px;">
@@ -300,19 +298,19 @@ def home():
 
             <div id="chat-container">
                 <div class="message-wrapper jarvis">
-                    <div class="bubble">Hola Santino. Panel central de JARVIS enlazado y listo. ¿Qué desarrollamos hoy?</div>
+                    <div class="bubble">Hola Santino. Conexión establecida con el núcleo galáctico. ¿Qué desplegamos hoy?</div>
                 </div>
             </div>
 
             <footer>
                 <div class="input-box-container">
-                    <textarea id="user-input" rows="1" placeholder="Pregúntale algo a JARVIS o escribe código..." oninput="autoExpand(this)"></textarea>
+                    <textarea id="user-input" rows="1" placeholder="Comunícate con JARVIS..." oninput="autoExpand(this)"></textarea>
                     <div class="action-buttons">
                         <button class="icon-btn" id="mic-btn" onclick="toggleVoz()" title="Modo Voz Continua">🎙️</button>
                         <button class="icon-btn" onclick="enviarMensaje()" title="Enviar">🚀</button>
                     </div>
                 </div>
-                <div style="font-size: 11px; color: var(--text-muted);">JARVIS v3.6 - Cloud & Local Bridge</div>
+                <div style="font-size: 11px; color: var(--text-muted);">JARVIS Galactic Edition - Gemini Bridge</div>
             </footer>
         </div>
 
