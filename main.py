@@ -133,46 +133,66 @@ def home():
     <html lang="es">
     <head>
         <meta charset="UTF-8">
-        <title>JARVIS - Chat Continuo</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>JARVIS - Omni Chat</title>
         <style>
+            * { box-sizing: border-box; }
             body { background: #0b141a; color: #e9edef; font-family: 'Segoe UI', Courier, monospace; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
-            header { background: #202c33; padding: 15px; text-align: center; border-bottom: 1px solid #2a3942; font-size: 20px; font-weight: bold; color: #00ffcc; }
-            #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
-            .message { max-width: 70%; padding: 12px 16px; border-radius: 8px; font-size: 15px; line-height: 1.4; word-wrap: break-word; }
+            header { background: #202c33; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a3942; color: #00ffcc; font-weight: bold; font-size: 18px; }
+            #chat-container { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; }
+            .message { max-width: 80%; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
             .user-msg { background: #005c4b; align-self: flex-end; border-top-right-radius: 0; }
             .jarvis-msg { background: #202c33; align-self: flex-start; border-top-left-radius: 0; border: 1px solid #2a3942; color: #00ffcc; }
-            footer { background: #202c33; padding: 15px; display: flex; align-items: center; justify-content: center; gap: 10px; border-top: 1px solid #2a3942; }
-            button { background: #00a884; border: none; color: white; padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 24px; font-weight: bold; transition: 0.2s; }
+            
+            /* Panel inferior adaptable a móviles */
+            footer { background: #202c33; padding: 10px 15px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #2a3942; }
+            .controls-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+            
+            input[type="text"] { flex: 1; background: #2a3942; border: none; padding: 12px; border-radius: 20px; color: white; font-size: 15px; outline: none; }
+            input[type="text"]::placeholder { color: #8696a0; }
+            
+            button { background: #00a884; border: none; color: white; padding: 10px 16px; font-size: 14px; cursor: pointer; border-radius: 20px; font-weight: bold; transition: 0.2s; white-space: nowrap; }
             button:hover { background: #02906f; }
             button.active { background: #d9534f; }
-            #status { font-size: 14px; color: #8696a0; margin-left: 10px; }
-            a.download-link { display: block; margin-top: 6px; font-size: 12px; color: #53bdeb; text-decoration: underline; }
+            #mic-btn { border-radius: 50%; width: 45px; height: 45px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+            
+            #status { font-size: 12px; color: #8696a0; text-align: center; }
+            a.download-link { display: block; margin-top: 4px; font-size: 11px; color: #53bdeb; text-decoration: underline; }
         </style>
     </head>
     <body>
-        <header>J.A.R.V.I.S. // SISTEMA ACTIVO</header>
+        <header>
+            <span>J.A.R.V.I.S.</span>
+            <span id="status">Inactivo</span>
+        </header>
         
         <div id="chat-container">
-            <div class="message jarvis-msg">Hola Santino. Sistema enlazado. Activa el modo conversación cuando gustes.</div>
+            <div class="message jarvis-msg">Sistema enlazado. Puedes hablar por voz, escribir por teclado o usar el modo continuo.</div>
         </div>
 
         <footer>
-            <button id="toggle-btn">🎙️ INICIAR CONVERSACIÓN</button>
-            <span id="status">Inactivo</span>
+            <div class="controls-row">
+                <input type="text" id="text-input" placeholder="Escribe un mensaje a JARVIS..." />
+                <button id="send-btn">Enviar</button>
+                <button id="mic-btn" title="Activar/Desactivar Voz Continua">🎙️</button>
+            </div>
         </footer>
 
         <script>
-            const toggleBtn = document.getElementById('toggle-btn');
+            const textInput = document.getElementById('text-input');
+            const sendBtn = document.getElementById('send-btn');
+            const micBtn = document.getElementById('mic-btn');
             const statusSpan = document.getElementById('status');
             const chatContainer = document.getElementById('chat-container');
 
             let isConversing = false;
             let recognition = null;
+            let currentAudio = null; // Referencia al audio actual para poder interrumpirlo
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                statusSpan.innerText = "Tu navegador no soporta voz. Usa Google Chrome.";
-                toggleBtn.disabled = true;
+                statusSpan.innerText = "Voz no soportada en este navegador.";
+                micBtn.style.display = 'none';
             } else {
                 recognition = new SpeechRecognition();
                 recognition.lang = 'es-ES';
@@ -181,106 +201,129 @@ def home():
 
                 recognition.onstart = () => {
                     statusSpan.innerText = "Escuchando...";
+                    micBtn.classList.add('active');
                 };
 
                 recognition.onresult = async (event) => {
                     const transcript = event.results[0][0].transcript;
-                    statusSpan.innerText = "Procesando...";
-                    
-                    // Añadir burbuja del usuario a la derecha
-                    appendMessage(transcript, 'user-msg');
-
-                    try {
-                        const response = await fetch('/procesar', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({text: transcript})
-                        });
-                        
-                        if (!response.ok) {
-                            const errorData = await response.json();
-                            throw new Error(errorData.detail || "Error en el servidor");
-                        }
-                        
-                        const data = await response.json();
-                        
-                        if(data.status === "ok") {
-                            const audioSrc = "data:audio/wav;base64," + data.audio_base64;
-                            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                            const fileName = `jarvis_${timestamp}.wav`;
-
-                            // Descarga automática en segundo plano
-                            const dl = document.createElement('a');
-                            dl.href = audioSrc;
-                            dl.download = fileName;
-                            document.body.appendChild(dl);
-                            dl.click();
-                            document.body.removeChild(dl);
-
-                            // Añadir burbuja de JARVIS a la izquierda con enlace de respaldo
-                            const jarvisHtml = `${data.respuesta_texto}<br><a class="download-link" href="${audioSrc}" download="${fileName}">📥 Descargar WAV</a>`;
-                            appendMessage(jarvisHtml, 'jarvis-msg', true);
-
-                            // Reproducir audio y reabrir micrófono al terminar
-                            const audio = new Audio(audioSrc);
-                            statusSpan.innerText = "JARVIS hablando...";
-                            
-                            audio.play().catch(e => console.log("Error al reproducir:", e));
-
-                            audio.onended = () => {
-                                if (isConversing) {
-                                    try {
-                                        recognition.start();
-                                    } catch (err) {
-                                        console.log("El micrófono ya estaba activo");
-                                    }
-                                } else {
-                                    statusSpan.innerText = "Pausado";
-                                }
-                            };
-                        }
-                    } catch (err) {
-                        statusSpan.innerText = "Error: " + err.message;
-                        console.error(err);
-                        if (isConversing) {
-                            setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
-                        }
-                    }
+                    await enviarMensaje(transcript);
                 };
 
                 recognition.onerror = (event) => {
-                    console.log("Error de reconocimiento:", event.error);
+                    console.log("Error de voz:", event.error);
                     if (isConversing && event.error !== 'aborted') {
                         setTimeout(() => { try { recognition.start(); } catch(e){} }, 1000);
                     }
                 };
 
                 recognition.onend = () => {
-                    // Si sigue activo el modo conversación pero se cerró por silencio, reintentar
                     if (isConversing && statusSpan.innerText === "Escuchando...") {
                         try { recognition.start(); } catch(e){}
+                    } else if (!isConversing) {
+                        micBtn.classList.remove('active');
                     }
                 };
 
-                toggleBtn.onclick = () => {
+                micBtn.onclick = () => {
                     isConversing = !isConversing;
                     if (isConversing) {
-                        toggleBtn.innerText = "⏹️ DETENER CONVERSACIÓN";
-                        toggleBtn.classList.add('active');
-                        try {
-                            recognition.start();
-                        } catch(e) {
-                            console.log(e);
-                        }
+                        // Si JARVIS está hablando, lo interrumpimos de golpe para escuchar
+                        interrumpirJarvis();
+                        try { recognition.start(); } catch(e){}
                     } else {
-                        toggleBtn.innerText = "🎙️ INICIAR CONVERSACIÓN";
-                        toggleBtn.classList.remove('active');
-                        try {
-                            recognition.stop();
-                        } catch(e){}
                         statusSpan.innerText = "Inactivo";
+                        micBtn.classList.remove('active');
+                        try { recognition.stop(); } catch(e){}
                     }
                 };
+            }
+
+            // Enviar mensaje por teclado
+            sendBtn.onclick = () => {
+                const text = textInput.value.trim();
+                if (text) {
+                    textInput.value = "";
+                    enviarMensaje(text);
+                }
+            };
+
+            textInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    sendBtn.click();
+                }
+            };
+
+            function interrumpirJarvis() {
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+            }
+
+            async function enviarMensaje(transcript) {
+                // Interrumpir cualquier reproducción anterior de JARVIS (Barge-in)
+                interrumpirJarvis();
+
+                // Si el micrófono estaba escuchando de forma continua, lo frenamos momentáneamente para procesar
+                if (isConversing) {
+                    try { recognition.stop(); } catch(e){}
+                }
+
+                appendMessage(transcript, 'user-msg');
+                statusSpan.innerText = "Procesando...";
+
+                try {
+                    const response = await fetch('/procesar', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: transcript})
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.detail || "Error en el servidor");
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if(data.status === "ok") {
+                        const audioSrc = "data:audio/wav;base64," + data.audio_base64;
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        const fileName = `jarvis_${timestamp}.wav`;
+
+                        // Descarga automática en segundo plano
+                        const dl = document.createElement('a');
+                        dl.href = audioSrc;
+                        dl.download = fileName;
+                        document.body.appendChild(dl);
+                        dl.click();
+                        document.body.removeChild(dl);
+
+                        const jarvisHtml = `${data.respuesta_texto}<br><a class="download-link" href="${audioSrc}" download="${fileName}">📥 Descargar WAV</a>`;
+                        appendMessage(jarvisHtml, 'jarvis-msg', true);
+
+                        // Reproducir audio de respuesta
+                        currentAudio = new Audio(audioSrc);
+                        statusSpan.innerText = "JARVIS hablando...";
+                        
+                        currentAudio.play().catch(e => console.log("Error al reproducir:", e));
+
+                        currentAudio.onended = () => {
+                            currentAudio = null;
+                            if (isConversing) {
+                                try { recognition.start(); } catch (err) {}
+                            } else {
+                                statusSpan.innerText = "Inactivo";
+                            }
+                        };
+                    }
+                } catch (err) {
+                    statusSpan.innerText = "Error: " + err.message;
+                    console.error(err);
+                    if (isConversing) {
+                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
+                    }
+                }
             }
 
             function appendMessage(text, className, isHtml = false) {
