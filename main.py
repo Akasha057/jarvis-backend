@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import io
+import base64
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -43,12 +44,11 @@ if not GEMINI_KEYS:
 
 # Inicializar ElevenLabs
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
-VOICE_ID = "OqoIeNOqjjjkwABBwfFl"  # Tu Voice ID configurado
 
 class PromptRequest(BaseModel):
     text: str
 
-def generar_respuesta_gemini(user_text: str) -> str:
+def generar_respuesta_con_fallback(user_text: str) -> str:
     """Genera respuesta con Gemini aplicando rotación de keys y usando gemini-3.6-flash."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
@@ -70,36 +70,30 @@ def generar_respuesta_gemini(user_text: str) -> str:
             print(f"⚠️ API Key falló: {e}")
             ultimo_error = e
             continue
-            
+
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-def generar_audio_elevenlabs(text: str) -> bytes:
-    """Genera audio en formato WAV usando ElevenLabs."""
+def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
+    """Sube el audio al bucket 'jarvis-audios' de Supabase de forma directa y retorna la URL pública."""
     try:
-        audio_generator = eleven_client.text_to_speech.convert(
-            voice_id=VOICE_ID,
-            optimize_streaming_latency="0",
-            output_format="pcm_22050",
-            text=text,
-            model_id="eleven_multilingual_v2"
-        )
-        audio_bytes_raw = b"".join(chunk for chunk in audio_generator)
-        
-        # Convertir PCM raw a WAV usando pydub
-        segment = AudioSegment(
-            data=audio_bytes_raw,
-            sample_width=2,
-            frame_rate=22050,
-            channels=1
-        )
-        wav_io = io.BytesIO()
-        segment.export(wav_io, format="wav")
-        return wav_io.getvalue()
-    except Exception as e:
-        print(f"❌ Error generando audio con ElevenLabs: {e}")
-        raise e
+        if not supabase:
+            print("⚠️ Supabase no está configurado correctamente.")
+            return "No disponible (Sin credenciales de Supabase)"
 
-def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
+        # Subida limpia con el parámetro de upsert correcto
+        supabase.storage.from_("jarvis-audios").upload(
+            path=filename,
+            file=wav_bytes,
+            file_options={"content-type": "audio/wav", "upsert": "true"}
+        )
+
+        public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
+        return public_url
+    except Exception as e:
+        print(f"❌ Error subiendo a Supabase: {e}")
+        return f"Error al subir: {e}"
+
+def registrar_en_sheets(texto: str, audio_link: str):
     """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
@@ -111,9 +105,9 @@ def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
             creds_dict, 
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
-        
+
         sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[timestamp_str, texto, audio_link]]
+        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
         sheet_service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID, 
             range="A1", 
@@ -124,39 +118,6 @@ def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
     except Exception as e:
         print(f"❌ Error crítico al registrar en Sheets: {e}")
 
-def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio usando el cliente oficial de Supabase para evitar errores de firma y 400."""
-    try:
-        if not supabase:
-            print("⚠️ Cliente de Supabase no inicializado.")
-            return "No disponible (Sin credenciales de Supabase)"
-
-        # Usar el SDK oficial de supabase para subir al bucket 'jarvis-audios' con upsert
-        response = supabase.storage.from_("jarvis-audios").upload(
-            path=filename,
-            file=wav_bytes,
-            file_options={"content-type": "audio/wav", "upsert": "true"}
-        )
-        
-        # Obtener la URL pública oficial
-        public_url_response = supabase.storage.from_("jarvis-audios").get_public_url(filename)
-        
-        # El SDK de supabase puede retornar un string o un dict dependiendo de la versión
-        if isinstance(public_url_response, dict):
-            public_url = public_url_response.get("publicUrl") or public_url_response.get("public_url")
-        else:
-            public_url = public_url_response
-
-        if public_url:
-            return public_url
-        else:
-            # Fallback a construcción manual si el helper no la devuelve directa
-            return f"{SUPABASE_URL}/storage/v1/object/public/jarvis-audios/{filename}"
-
-    except Exception as e:
-        print(f"❌ Error crítico subiendo a Supabase con SDK: {e}")
-        return f"Error al subir: {e}"
-        
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -167,7 +128,7 @@ def home():
         <title>JARVIS Interface</title>
         <style>
             body { background: #000; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
-            button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; margin: 10px; }
+            button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; }
             button:hover { background: #004444; }
             #status { margin-top: 20px; font-size: 18px; }
         </style>
@@ -175,24 +136,12 @@ def home():
     <body>
         <h1>JARVIS</h1>
         <button id="start-btn">🎙️ ACTIVAR MODO VOZ</button>
-        <br>
-        <button id="play-btn" style="display:none;">🔊 REPRODUCIR ÚLTIMO AUDIO</button>
         <p id="status">Esperando comandos...</p>
 
         <script>
             const btn = document.getElementById('start-btn');
-            const playBtn = document.getElementById('play-btn');
             const status = document.getElementById('status');
             
-            let ultimoAudioUrl = null;
-
-            playBtn.onclick = () => {
-                if (ultimoAudioUrl) {
-                    const audio = new Audio(ultimoAudioUrl);
-                    audio.play().catch(e => console.log("Error al reproducir audio:", e));
-                }
-            };
-
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 status.innerText = "Tu navegador no soporta reconocimiento de voz. Usa Google Chrome.";
@@ -226,14 +175,10 @@ def home():
                         if(data.status === "ok") {
                             status.innerText = "JARVIS: " + data.respuesta_texto;
                             
-                            if(data.audio_url && !data.audio_url.includes("Error")) {
-                                ultimoAudioUrl = data.audio_url;
-                                playBtn.style.display = "inline-block";
-                                const audio = new Audio(data.audio_url);
-                                audio.play().catch(e => {
-                                    console.log("Reproducción automática bloqueada por el navegador:", e);
-                                    // El usuario puede usar el botón de respaldo si el navegador bloquea el autoplay
-                                });
+                            if(data.audio_base64) {
+                                const audioSrc = "data:audio/mp3;base64," + data.audio_base64;
+                                const audio = new Audio(audioSrc);
+                                audio.play().catch(e => console.log("Error al reproducir audio:", e));
                             }
                         } else {
                             status.innerText = "Error: " + (data.message || "Respuesta inválida");
@@ -250,45 +195,42 @@ def home():
     """
 
 @app.post("/procesar")
-async def procesar(data: dict):
-    user_text = data.get("text", "")
-    
+def procesar(payload: PromptRequest):
     try:
-        # 1. Generar respuesta con Gemini
-        response_text = generar_respuesta_gemini(user_text)
-        
-        # 2. Generar audio con ElevenLabs
-        audio_bytes = generar_audio_elevenlabs(response_text)
-        
-        # 3. Preparar nombre del archivo
-        timestamp_str = datetime.datetime.now().isoformat()
-        timestamp_file = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"audio_{timestamp_file}.wav"
-        
-        # 4. Subir a Supabase usando el SDK oficial
-        public_url = subir_a_supabase(audio_bytes, filename)
-        
-        # 5. Registrar en Google Sheets
-        registrar_en_sheets(timestamp_str, user_text, public_url)
-        
-        # 6. Notificar a Pipedream para la subida a Google Drive
-        try:
-            webhook_url = "https://eowdtdj2mhqdehn.m.pipedream.net"
-            payload = {
-                "audio_url": public_url,
-                "filename": filename
-            }
-            requests.post(webhook_url, json=payload)
-            print(f"✅ Notificación enviada a Pipedream para {filename}")
-        except Exception as e:
-            print(f"❌ Error enviando notificación a Pipedream: {e}")
+        user_text = payload.text
 
-        # 7. Retornar respuesta compatible
+        # 1. Generar respuesta con Gemini 3.6 Flash
+        respuesta_texto = generar_respuesta_con_fallback(user_text)
+
+        # 2. Generar audio con ElevenLabs
+        audio_stream = eleven_client.text_to_speech.convert(
+            text=respuesta_texto,
+            voice_id="OqoIeNOqjjjkwABBwfFl",
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128"
+        )
+        audio_bytes = b"".join(chunk for chunk in audio_stream)
+
+        # 3. Convertir MP3 a WAV
+        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+        wav_io = io.BytesIO()
+        audio_wav.export(wav_io, format="wav")
+
+        # 4. Subir a Supabase Storage y registrar en Google Sheets
+        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
+        audio_link = subir_a_supabase(wav_io.getvalue(), filename)
+        registrar_en_sheets(user_text, audio_link)
+
+        # 5. Retornar respuesta al cliente
+        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
         return {
             "status": "ok",
-            "respuesta_texto": response_text,
-            "audio_url": public_url
+            "respuesta_texto": respuesta_texto,
+            "audio_base64": audio_b64
         }
+
     except Exception as e:
         print(f"❌ Error en /procesar: {e}")
         raise HTTPException(status_code=500, detail=str(e))
