@@ -6,19 +6,11 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
 
 app = FastAPI()
-
-# Configuración de credenciales y IDs
-CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
-DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 # Carga segura de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
@@ -41,8 +33,9 @@ if single_key and single_key.strip() not in GEMINI_KEYS:
 if not GEMINI_KEYS:
     print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas.")
 
-# Inicializar ElevenLabs
-eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+# Inicializar ElevenLabs con manejo defensivo
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
 
 class PromptRequest(BaseModel):
     text: str
@@ -60,7 +53,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
                 model="gemini-3.6-flash",
                 contents=user_text,
                 config={
-                    "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas."
+                    "system_instruction": "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
                 }
             )
             if response and response.text:
@@ -72,60 +65,6 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
 
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
-def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
-    """Sube el audio WAV directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
-    try:
-        if not CREDENTIALS_JSON:
-            print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
-            return "No disponible"
-
-        creds_dict = json.loads(CREDENTIALS_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, 
-            scopes=[
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive.file'
-            ]
-        )
-
-        drive_service = build('drive', 'v3', credentials=creds)
-        file_metadata = {'name': filename}
-        if DRIVE_FOLDER_ID:
-            file_metadata['parents'] = [DRIVE_FOLDER_ID]
-
-        media = MediaIoBaseUpload(io.BytesIO(wav_bytes), mimetype='audio/wav', resumable=True)
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webViewLink'
-        ).execute()
-
-        file_id = file.get('id')
-        audio_link = file.get('webViewLink')
-
-        try:
-            drive_service.permissions().create(
-                fileId=file_id,
-                body={'role': 'reader', 'type': 'anyone'}
-            ).execute()
-        except Exception as perm_err:
-            print(f"⚠️ No se pudo hacer público el archivo en Drive: {perm_err}")
-
-        sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
-        sheet_service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID, 
-            range="A1", 
-            valueInputOption="RAW",
-            body={"values": valores}
-        ).execute()
-
-        return audio_link
-
-    except Exception as e:
-        print(f"❌ Error al subir a Drive o Sheets: {e}")
-        return "Error al guardar en Drive"
-
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -134,60 +73,185 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>JARVIS - Omni Chat</title>
+        <title>J.A.R.V.I.S. - Omni Chat</title>
+        <!-- Markdown Parser & Code Highlighter -->
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <!-- jsPDF para descarga de PDFs -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+        
         <style>
+            :root {
+                --bg-main: #0b131a;
+                --bg-panel: #111b21;
+                --bg-bubble-user: #005c4b;
+                --bg-bubble-jarvis: #202c33;
+                --text-main: #e9edef;
+                --text-muted: #8696a0;
+                --accent: #00a884;
+                --accent-hover: #008f72;
+            }
             * { box-sizing: border-box; }
-            body { background: #0b141a; color: #e9edef; font-family: 'Segoe UI', Courier, monospace; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
-            header { background: #202c33; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a3942; color: #00ffcc; font-weight: bold; font-size: 18px; }
-            #chat-container { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; }
-            .message { max-width: 80%; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
-            .user-msg { background: #005c4b; align-self: flex-end; border-top-right-radius: 0; }
-            .jarvis-msg { background: #202c33; align-self: flex-start; border-top-left-radius: 0; border: 1px solid #2a3942; color: #00ffcc; }
+            body { 
+                background: var(--bg-main); 
+                color: var(--text-main); 
+                font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+                margin: 0; 
+                padding: 0; 
+                display: flex; 
+                flex-direction: column; 
+                height: 100vh; 
+                overflow: hidden; 
+            }
             
-            /* Panel inferior adaptable a móviles */
-            footer { background: #202c33; padding: 10px 15px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #2a3942; }
-            .controls-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+            header { 
+                padding: 12px 20px; 
+                display: flex; 
+                align-items: center; 
+                justify-content: space-between; 
+                background: var(--bg-panel); 
+                border-bottom: 1px solid #222d34;
+            }
             
-            input[type="text"] { flex: 1; background: #2a3942; border: none; padding: 12px; border-radius: 20px; color: white; font-size: 15px; outline: none; }
-            input[type="text"]::placeholder { color: #8696a0; }
+            #chat-container { 
+                flex: 1; 
+                overflow-y: auto; 
+                padding: 20px; 
+                display: flex; 
+                flex-direction: column; 
+                gap: 15px; 
+                max-width: 900px; 
+                width: 100%; 
+                margin: 0 auto; 
+            }
             
-            button { background: #00a884; border: none; color: white; padding: 10px 16px; font-size: 14px; cursor: pointer; border-radius: 20px; font-weight: bold; transition: 0.2s; white-space: nowrap; }
-            button:hover { background: #02906f; }
-            button.active { background: #d9534f; }
-            #mic-btn { border-radius: 50%; width: 45px; height: 45px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+            .message-wrapper { 
+                display: flex; 
+                flex-direction: column; 
+                max-width: 80%; 
+            }
+            .message-wrapper.user { align-self: flex-end; }
+            .message-wrapper.jarvis { align-self: flex-start; }
             
-            #status { font-size: 12px; color: #8696a0; text-align: center; }
-            a.download-link { display: block; margin-top: 4px; font-size: 11px; color: #53bdeb; text-decoration: underline; }
+            .bubble { 
+                padding: 10px 14px; 
+                border-radius: 8px; 
+                font-size: 14px; 
+                line-height: 1.5; 
+                word-wrap: break-word; 
+            }
+            .user .bubble { background: var(--bg-bubble-user); color: #fff; border-top-right-radius: 0; }
+            .jarvis .bubble { background: var(--bg-bubble-jarvis); color: var(--text-main); border-top-left-radius: 0; border: 1px solid #2a3942; }
+            
+            pre { background: #0b141a !important; padding: 12px; border-radius: 6px; overflow-x: auto; border: 1px solid #222d34; }
+            code { font-family: 'Courier New', Courier, monospace; }
+            .code-header { background: #182229; padding: 4px 8px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-top: 8px; }
+            .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; }
+
+            footer { 
+                padding: 12px 20px; 
+                background: var(--bg-panel); 
+                display: flex; 
+                align-items: center; 
+                justify-content: center;
+                gap: 12px;
+                border-top: 1px solid #222d34;
+            }
+            
+            .input-box-container { 
+                background: #2a3942; 
+                border-radius: 8px; 
+                padding: 6px 12px; 
+                display: flex; 
+                align-items: center; 
+                gap: 10px; 
+                width: 100%; 
+                max-width: 900px; 
+            }
+            
+            textarea { 
+                flex: 1; 
+                background: none; 
+                border: none; 
+                color: white; 
+                font-size: 14px; 
+                outline: none; 
+                resize: none; 
+                max-height: 100px; 
+                font-family: inherit; 
+            }
+            textarea::placeholder { color: var(--text-muted); }
+            
+            .action-buttons { display: flex; align-items: center; gap: 8px; }
+            .icon-btn { 
+                background: none; 
+                border: none; 
+                color: var(--text-muted); 
+                font-size: 18px; 
+                cursor: pointer; 
+                padding: 6px; 
+                border-radius: 50%; 
+                display: flex; 
+                align-items: center; 
+                justify-content: center; 
+            }
+            .icon-btn:hover { color: var(--text-main); }
+            .icon-btn.active { color: #d9534f; }
+            
+            .send-btn {
+                background: var(--accent);
+                color: #111b21;
+                border: none;
+                padding: 6px 14px;
+                border-radius: 6px;
+                font-weight: 600;
+                cursor: pointer;
+                font-size: 13px;
+            }
+            .send-btn:hover { background: var(--accent-hover); }
+
+            #status { font-size: 12px; color: var(--text-muted); }
+            .action-link-btn { margin-top: 8px; background: #182229; border: 1px solid var(--accent); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 6px; }
+            .action-link-btn:hover { background: var(--accent); color: #111b21; }
         </style>
     </head>
     <body>
+
         <header>
-            <span>J.A.R.V.I.S.</span>
+            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S.</span>
             <span id="status">Inactivo</span>
         </header>
-        
+
         <div id="chat-container">
-            <div class="message jarvis-msg">Sistema enlazado. Puedes hablar por voz, escribir por teclado o usar el modo continuo.</div>
+            <div class="message-wrapper jarvis">
+                <div class="bubble">Sistema enlazado. Puedes hablar por voz, escribir por teclado o usar el modo continuo.</div>
+            </div>
         </div>
 
         <footer>
-            <div class="controls-row">
-                <input type="text" id="text-input" placeholder="Escribe un mensaje a JARVIS..." />
-                <button id="send-btn">Enviar</button>
-                <button id="mic-btn" title="Activar/Desactivar Voz Continua">🎙️</button>
+            <div class="input-box-container">
+                <textarea id="user-input" rows="1" placeholder="Escribe un mensaje a J.A.R.V.I.S..." oninput="autoExpand(this)"></textarea>
+                <div class="action-buttons">
+                    <button class="icon-btn" id="mic-btn" onclick="toggleVoz()" title="Modo Voz Continua">🎙️</button>
+                    <button class="send-btn" onclick="enviarMensaje()">Enviar</button>
+                </div>
             </div>
         </footer>
 
         <script>
-            const textInput = document.getElementById('text-input');
-            const sendBtn = document.getElementById('send-btn');
-            const micBtn = document.getElementById('mic-btn');
-            const statusSpan = document.getElementById('status');
             const chatContainer = document.getElementById('chat-container');
+            const statusSpan = document.getElementById('status');
+            const micBtn = document.getElementById('mic-btn');
 
             let isConversing = false;
             let recognition = null;
-            let currentAudio = null; // Referencia al audio actual para poder interrumpirlo
+            let currentAudio = null;
+
+            function autoExpand(textarea) {
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+            }
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
@@ -199,14 +263,14 @@ def home():
                 recognition.interimResults = false;
                 recognition.continuous = false;
 
-                recognition.onstart = () => {
-                    statusSpan.innerText = "Escuchando...";
+                recognition.onstart = () => { 
+                    statusSpan.innerText = "Escuchando..."; 
                     micBtn.classList.add('active');
                 };
-
+                
                 recognition.onresult = async (event) => {
                     const transcript = event.results[0][0].transcript;
-                    await enviarMensaje(transcript);
+                    await enviarTexto(transcript);
                 };
 
                 recognition.onerror = (event) => {
@@ -223,35 +287,7 @@ def home():
                         micBtn.classList.remove('active');
                     }
                 };
-
-                micBtn.onclick = () => {
-                    isConversing = !isConversing;
-                    if (isConversing) {
-                        // Si JARVIS está hablando, lo interrumpimos de golpe para escuchar
-                        interrumpirJarvis();
-                        try { recognition.start(); } catch(e){}
-                    } else {
-                        statusSpan.innerText = "Inactivo";
-                        micBtn.classList.remove('active');
-                        try { recognition.stop(); } catch(e){}
-                    }
-                };
             }
-
-            // Enviar mensaje por teclado
-            sendBtn.onclick = () => {
-                const text = textInput.value.trim();
-                if (text) {
-                    textInput.value = "";
-                    enviarMensaje(text);
-                }
-            };
-
-            textInput.onkeydown = (e) => {
-                if (e.key === 'Enter') {
-                    sendBtn.click();
-                }
-            };
 
             function interrumpirJarvis() {
                 if (currentAudio) {
@@ -260,58 +296,71 @@ def home():
                 }
             }
 
-            async function enviarMensaje(transcript) {
-                // Interrumpir cualquier reproducción anterior de JARVIS (Barge-in)
-                interrumpirJarvis();
-
-                // Si el micrófono estaba escuchando de forma continua, lo frenamos momentáneamente para procesar
+            function toggleVoz() {
+                if (!recognition) return;
+                isConversing = !isConversing;
                 if (isConversing) {
+                    interrumpirJarvis();
+                    try { recognition.start(); } catch(e){}
+                } else {
+                    micBtn.classList.remove('active');
+                    statusSpan.innerText = "Inactivo";
                     try { recognition.stop(); } catch(e){}
                 }
+            }
 
-                appendMessage(transcript, 'user-msg');
+            async function enviarMensaje() {
+                const textarea = document.getElementById('user-input');
+                const text = textarea.value.trim();
+                if (!text) return;
+                textarea.value = "";
+                textarea.style.height = 'auto';
+                await enviarTexto(text);
+            }
+
+            document.getElementById('user-input').onkeydown = (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    enviarMensaje();
+                }
+            };
+
+            async function enviarTexto(text) {
+                interrumpirJarvis();
+                if (isConversing) { try { recognition.stop(); } catch(e){} }
+
+                appendMessageUI(text, 'user');
                 statusSpan.innerText = "Procesando...";
 
                 try {
                     const response = await fetch('/procesar', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({text: transcript})
+                        body: JSON.stringify({ text: text })
                     });
                     
                     if (!response.ok) {
                         const errorData = await response.json();
                         throw new Error(errorData.detail || "Error en el servidor");
                     }
-                    
+
                     const data = await response.json();
-                    
-                    if(data.status === "ok") {
+
+                    if (data.status === "ok") {
                         const audioSrc = "data:audio/wav;base64," + data.audio_base64;
                         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
                         const fileName = `jarvis_${timestamp}.wav`;
 
-                        // Descarga automática en segundo plano
-                        const dl = document.createElement('a');
-                        dl.href = audioSrc;
-                        dl.download = fileName;
-                        document.body.appendChild(dl);
-                        dl.click();
-                        document.body.removeChild(dl);
+                        appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, fileName);
 
-                        const jarvisHtml = `${data.respuesta_texto}<br><a class="download-link" href="${audioSrc}" download="${fileName}">📥 Descargar WAV</a>`;
-                        appendMessage(jarvisHtml, 'jarvis-msg', true);
-
-                        // Reproducir audio de respuesta
                         currentAudio = new Audio(audioSrc);
-                        statusSpan.innerText = "JARVIS hablando...";
-                        
+                        statusSpan.innerText = "J.A.R.V.I.S. hablando...";
                         currentAudio.play().catch(e => console.log("Error al reproducir:", e));
 
                         currentAudio.onended = () => {
                             currentAudio = null;
                             if (isConversing) {
-                                try { recognition.start(); } catch (err) {}
+                                try { recognition.start(); } catch(e){}
                             } else {
                                 statusSpan.innerText = "Inactivo";
                             }
@@ -319,23 +368,74 @@ def home():
                     }
                 } catch (err) {
                     statusSpan.innerText = "Error: " + err.message;
+                    appendMessageUI("⚠️ Ocurrió un error al procesar tu solicitud en el servidor.", 'jarvis');
                     console.error(err);
-                    if (isConversing) {
-                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
+                    if (isConversing) { 
+                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000); 
                     }
                 }
             }
 
-            function appendMessage(text, className, isHtml = false) {
-                const div = document.createElement('div');
-                div.className = `message ${className}`;
-                if (isHtml) {
-                    div.innerHTML = text;
+            function appendMessageUI(text, sender, audioSrc = null, fileName = null) {
+                const wrapper = document.createElement('div');
+                wrapper.className = `message-wrapper ${sender}`;
+
+                const bubble = document.createElement('div');
+                bubble.className = 'bubble';
+
+                if (sender === 'user') {
+                    bubble.innerText = text;
                 } else {
-                    div.innerText = text;
+                    bubble.innerHTML = marked.parse(text);
+                    
+                    bubble.querySelectorAll('pre').forEach(pre => {
+                        const header = document.createElement('div');
+                        header.className = 'code-header';
+                        header.innerHTML = `<span>código</span> <button class="copy-btn" onclick="copiarCodigo(this)">Copiar</button>`;
+                        pre.parentNode.insertBefore(header, pre);
+                    });
+
+                    // Botón para descargar PDF de la respuesta
+                    const pdfBtn = document.createElement('button');
+                    pdfBtn.className = 'action-link-btn';
+                    pdfBtn.innerHTML = '📄 Descargar PDF';
+                    pdfBtn.onclick = () => generarPDF(text);
+                    bubble.appendChild(pdfBtn);
+
+                    // Botón para descargar WAV si está disponible
+                    if (audioSrc && fileName) {
+                        const wavBtn = document.createElement('a');
+                        wavBtn.href = audioSrc;
+                        wavBtn.download = fileName;
+                        wavBtn.className = 'action-link-btn';
+                        wavBtn.innerText = '📥 Descargar WAV';
+                        bubble.appendChild(wavBtn);
+                    }
                 }
-                chatContainer.appendChild(div);
+
+                wrapper.appendChild(bubble);
+                chatContainer.appendChild(wrapper);
                 chatContainer.scrollTop = chatContainer.scrollHeight;
+                hljs.highlightAll();
+            }
+
+            function copiarCodigo(btn) {
+                const code = btn.closest('.message-wrapper').querySelector('code').innerText;
+                navigator.clipboard.writeText(code);
+                btn.innerText = '¡Copiado!';
+                setTimeout(() => btn.innerText = 'Copiar', 2000);
+            }
+
+            function generarPDF(text) {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+                doc.setFont("Helvetica", "normal");
+                doc.setFontSize(12);
+                
+                const cleanText = text.replace(/<[^>]*>?/gm, '');
+                const splitText = doc.splitTextToSize(cleanText, 180);
+                doc.text(splitText, 15, 20);
+                doc.save(`jarvis_respuesta_${Date.now()}.pdf`);
             }
         </script>
     </body>
@@ -350,28 +450,29 @@ def procesar(payload: PromptRequest):
         # 1. Generar respuesta con Gemini 3.6 Flash
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
-        # 2. Generar audio con ElevenLabs
-        audio_stream = eleven_client.text_to_speech.convert(
-            text=respuesta_texto,
-            voice_id="OqoIeNOqjjjkwABBwfFl",
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128"
-        )
-        audio_bytes = b"".join(chunk for chunk in audio_stream)
+        # 2. Generar audio con ElevenLabs (si está disponible)
+        audio_b64 = ""
+        wav_bytes = b""
+        if eleven_client:
+            try:
+                audio_stream = eleven_client.text_to_speech.convert(
+                    text=respuesta_texto[:500],
+                    voice_id="OqoIeNOqjjjkwABBwfFl",
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128"
+                )
+                audio_bytes = b"".join(chunk for chunk in audio_stream)
 
-        # 3. Convertir MP3 a WAV
-        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-        wav_io = io.BytesIO()
-        audio_wav.export(wav_io, format="wav")
-        wav_bytes = wav_io.getvalue()
+                # 3. Convertir MP3 a WAV
+                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+                wav_io = io.BytesIO()
+                audio_wav.export(wav_io, format="wav")
+                wav_bytes = wav_io.getvalue()
 
-        # 4. Subir a Google Drive y registrar en Sheets
-        filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-        subir_a_drive_y_registrar(user_text, wav_bytes, filename)
-
-        # 5. Retornar Base64
-        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+                audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+            except Exception as audio_err:
+                print(f"⚠️ Error generando audio con ElevenLabs: {audio_err}")
 
         return {
             "status": "ok",
