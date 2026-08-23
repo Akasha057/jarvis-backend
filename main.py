@@ -41,7 +41,7 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación segura de keys."""
+    """Genera respuesta con Gemini usando gemini-3.6-flash, rotación segura y Google Search."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
@@ -57,7 +57,9 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
                         "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
                         "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
                         "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
-                    )
+                    ),
+                    # 🔍 Habilitamos la búsqueda web para datos en tiempo real
+                    "tools": [{"google_search": {}}]
                 }
             )
             if response and response.text:
