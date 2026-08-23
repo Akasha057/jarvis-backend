@@ -73,26 +73,23 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket de Supabase de forma ultra limpia sin metadatos que rompan el JSON."""
+    """Sube el audio a Supabase de forma segura sin interrumpir el flujo principal si hay un error de tipo."""
     try:
         if not supabase:
-            print("⚠️ Supabase no está configurado correctamente.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Subida directa evitando diccionarios complejos de file_options que causaban el error 400
+        # Intento de subida con el cliente de Supabase
         supabase.storage.from_("jarvis-audios").upload(
             path=filename,
             file=wav_bytes
         )
-
-        public_url = supabase.storage.from_("jarvis-audios").get_public_url(filename)
-        return public_url
+        return supabase.storage.from_("jarvis-audios").get_public_url(filename)
     except Exception as e:
-        print(f"❌ Error subiendo a Supabase: {e}")
-        return f"Error al subir: {e}"
+        print(f"⚠️ Aviso no crítico en Supabase (continuando flujo): {e}")
+        return "No disponible temporalmente en Supabase"
 
 def registrar_en_sheets(texto: str, audio_link: str):
-    """Registra el texto y el enlace de Supabase del audio en Google Sheets."""
+    """Registra el texto y el enlace en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
@@ -197,7 +194,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
 
-        # 1. Generar respuesta con Gemini 3.6 Flash
+        # 1. Generar respuesta con Gemini
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs
@@ -215,12 +212,12 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
 
-        # 4. Subir a Supabase Storage (sin opciones JSON conflictivas) y registrar en Sheets
+        # 4. Subir a Supabase (protegido para que no rompa si hay error de tipo) y registrar en Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
         audio_link = subir_a_supabase(wav_io.getvalue(), filename)
         registrar_en_sheets(user_text, audio_link)
 
-        # 5. Retornar respuesta al cliente
+        # 5. Retornar respuesta al cliente para que hable y muestre texto
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
 
         return {
@@ -230,5 +227,5 @@ def procesar(payload: PromptRequest):
         }
 
     except Exception as e:
-        print(f"❌ Error en /procesar: {e}")
+        print(f"❌ Error crítico en /procesar: {e}")
         raise HTTPException(status_code=500, detail=str(e))
