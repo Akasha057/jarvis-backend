@@ -18,7 +18,7 @@ app = FastAPI()
 # Configuración de credenciales y IDs
 CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
-DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") # ID de la carpeta en Drive donde se guardarán los audios
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 # Cargar la lista de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
@@ -44,13 +44,14 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación de keys."""
+    """Genera respuesta con Gemini usando gemini-3.6-flash y rotación segura de keys."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
+            # Inicialización corregida para la librería google-genai
             client = genai.Client(api_key=api_key.strip())
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
@@ -69,7 +70,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
 
 def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
-    """Sube el audio directamente a Google Drive y registra los datos en Google Sheets."""
+    """Sube el audio directamente a la carpeta compartida de Google Drive y registra en Google Sheets."""
     try:
         if not CREDENTIALS_JSON:
             print("⚠️ Aviso: No se encontró GOOGLE_CREDENTIALS_JSON")
@@ -101,7 +102,7 @@ def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
         file_id = file.get('id')
         audio_link = file.get('webViewLink')
 
-        # Hacer el archivo público en Drive para que se pueda reproducir/ver fácil (Opcional)
+        # Hacer el archivo público en Drive para poder reproducirlo
         try:
             drive_service.permissions().create(
                 fileId=file_id,
@@ -225,7 +226,7 @@ def procesar(payload: PromptRequest):
         wav_io = io.BytesIO()
         audio_wav.export(wav_io, format="wav")
 
-        # 4. Subir a Google Drive y registrar en Sheets en un solo paso limpio
+        # 4. Subir a Google Drive compartido y registrar en Sheets
         filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
         subir_a_drive_y_registrar(user_text, wav_io.getvalue(), filename)
 
