@@ -8,9 +8,6 @@ from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
@@ -49,10 +46,6 @@ def init_db():
 
 init_db()
 
-CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
-DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-
 # Carga segura de keys de Gemini
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
 GEMINI_KEYS = []
@@ -88,7 +81,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-2.5-flash",
                 contents=user_text,
                 config={
                     "system_instruction": "Eres JARVIS, un asistente de inteligencia artificial avanzado, formal, técnico, eficiente y de respuestas directas. Si generas código (como Python), utiliza bloques de código limpios."
@@ -102,58 +95,6 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             continue
 
     return f"⚠️ Error generando respuesta con Gemini: {str(ultimo_error)}"
-
-def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
-    """Sube el audio WAV a Google Drive y registra en Google Sheets de forma segura sin bloquear."""
-    try:
-        if not CREDENTIALS_JSON:
-            return "No disponible"
-
-        creds_dict = json.loads(CREDENTIALS_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, 
-            scopes=[
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive.file'
-            ]
-        )
-
-        drive_service = build('drive', 'v3', credentials=creds)
-        file_metadata = {'name': filename}
-        if DRIVE_FOLDER_ID:
-            file_metadata['parents'] = [DRIVE_FOLDER_ID]
-
-        media = MediaIoBaseUpload(io.BytesIO(wav_bytes), mimetype='audio/wav', resumable=True)
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webViewLink'
-        ).execute()
-
-        file_id = file.get('id')
-        audio_link = file.get('webViewLink')
-
-        try:
-            drive_service.permissions().create(
-                fileId=file_id,
-                body={'role': 'reader', 'type': 'anyone'}
-            ).execute()
-        except Exception:
-            pass
-
-        sheet_service = build('sheets', 'v4', credentials=creds)
-        valores = [[datetime.datetime.now().isoformat(), texto, audio_link]]
-        sheet_service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID, 
-            range="A1", 
-            valueInputOption="RAW",
-            body={"values": valores}
-        ).execute()
-
-        return audio_link
-    except Exception as e:
-        print(f"⚠️ Aviso no crítico (Drive/Sheets): {e}")
-        return "Error al guardar en Drive"
 
 # ==================== ENDPOINTS DE LA API ====================
 
@@ -212,7 +153,6 @@ def procesar(payload: PromptRequest):
 
         # 2. Generar audio con ElevenLabs y convertir a WAV
         audio_b64 = ""
-        wav_bytes = b""
         try:
             if eleven_client:
                 print("🎙️ Generando audio con ElevenLabs...")
@@ -228,17 +168,11 @@ def procesar(payload: PromptRequest):
                 audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
                 wav_io = io.BytesIO()
                 audio_wav.export(wav_io, format="wav")
-                wav_bytes = wav_io.getvalue()
-                audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
         except Exception as audio_err:
             print(f"⚠️ Error generando audio con ElevenLabs: {audio_err}")
 
-        # 3. Subir a Drive (si hay audio)
-        if wav_bytes:
-            filename = f'audio_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.wav'
-            subir_a_drive_y_registrar(user_text, wav_bytes, filename)
-
-        # Guardar respuesta de JARVIS
+        # Guardar respuesta de JARVIS en la base de datos local
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("INSERT INTO messages (session_id, sender, text, audio_b64) VALUES (?, ?, ?, ?)",
