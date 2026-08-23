@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sqlite3
+from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -76,7 +77,7 @@ eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY els
 
 class PromptRequest(BaseModel):
     text: str
-    session_id: int = None
+    session_id: Optional[Any] = None
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
     if not GEMINI_KEYS:
@@ -187,7 +188,11 @@ def get_session_messages(session_id: int):
 def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
-        session_id = payload.session_id
+        
+        # Validación y conversión limpia de session_id
+        session_id = None
+        if payload.session_id is not None and str(payload.session_id).isdigit():
+            session_id = int(payload.session_id)
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
