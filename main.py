@@ -20,22 +20,26 @@ CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 SHEET_ID = "1O5nwvczZ4i6NxQJtwCnwddfcz3pA5eg_evqiujDnMRU"
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
-# Cargar la lista de keys de Gemini
-raw_keys = os.getenv("GEMINI_API_KEYS", "[]")
-try:
-    if raw_keys.startswith("["):
-        GEMINI_KEYS = json.loads(raw_keys)
+# Carga segura de keys de Gemini (limpia corchetes, comillas o espacios automáticamente)
+raw_keys = os.getenv("GEMINI_API_KEYS", "")
+GEMINI_KEYS = []
+if raw_keys:
+    if raw_keys.strip().startswith("["):
+        try:
+            parsed = json.loads(raw_keys)
+            if isinstance(parsed, list):
+                GEMINI_KEYS = [str(k).strip() for k in parsed if k]
+        except Exception:
+            GEMINI_KEYS = [raw_keys.strip()]
     else:
         GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
-except Exception:
-    GEMINI_KEYS = []
 
 single_key = os.getenv("GEMINI_API_KEY")
-if single_key and single_key not in GEMINI_KEYS:
-    GEMINI_KEYS.insert(0, single_key)
+if single_key and single_key.strip() not in GEMINI_KEYS:
+    GEMINI_KEYS.insert(0, single_key.strip())
 
 if not GEMINI_KEYS:
-    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas en GEMINI_API_KEYS.")
+    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas.")
 
 # Inicializar ElevenLabs
 eleven_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
@@ -51,8 +55,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
-            # Inicialización corregida para la librería google-genai
-            client = genai.Client(api_key=api_key.strip())
+            client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
@@ -88,9 +91,11 @@ def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
         # 1. Subir a Google Drive
         drive_service = build('drive', 'v3', credentials=creds)
         file_metadata = {
-            'name': filename,
-            'parents': [DRIVE_FOLDER_ID] if DRIVE_FOLDER_ID else []
+            'name': filename
         }
+        if DRIVE_FOLDER_ID:
+            file_metadata['parents'] = [DRIVE_FOLDER_ID]
+
         media = MediaIoBaseUpload(io.BytesIO(wav_bytes), mimetype='audio/wav', resumable=True)
         
         file = drive_service.files().create(
