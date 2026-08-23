@@ -126,7 +126,7 @@ def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
         print(f"❌ Error crítico al registrar en Sheets: {e}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' mediante HTTP POST directo."""
+    """Sube el audio al bucket 'jarvis-audios' mediante HTTP POST con multipart/form-data."""
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
             print("⚠️ Supabase no está configurado correctamente.")
@@ -138,11 +138,15 @@ def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "audio/wav",
             "x-upsert": "true"
         }
 
-        response = requests.post(url, data=wav_bytes, headers=headers)
+        # Usar 'files' en lugar de 'data' evita problemas de parseo binario en la API de Supabase Storage
+        files = {
+            'file': (filename, wav_bytes, 'audio/wav')
+        }
+
+        response = requests.post(url, headers=headers, files=files)
         
         if response.status_code in [200, 201]:
             # Construir y retornar la URL pública oficial limpia
