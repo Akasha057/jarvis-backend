@@ -2,7 +2,6 @@ import os
 import json
 import datetime
 import io
-import base64
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -126,38 +125,36 @@ def registrar_en_sheets(timestamp_str: str, texto: str, audio_link: str):
         print(f"❌ Error crítico al registrar en Sheets: {e}")
 
 def subir_a_supabase(wav_bytes: bytes, filename: str) -> str:
-    """Sube el audio al bucket 'jarvis-audios' mediante HTTP POST con multipart/form-data."""
+    """Sube el audio usando el cliente oficial de Supabase para evitar errores de firma y 400."""
     try:
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            print("⚠️ Supabase no está configurado correctamente.")
+        if not supabase:
+            print("⚠️ Cliente de Supabase no inicializado.")
             return "No disponible (Sin credenciales de Supabase)"
 
-        # Endpoint directo del bucket de Supabase Storage
-        url = f"{SUPABASE_URL}/storage/v1/object/jarvis-audios/{filename}"
+        # Usar el SDK oficial de supabase para subir al bucket 'jarvis-audios' con upsert
+        response = supabase.storage.from_("jarvis-audios").upload(
+            path=filename,
+            file=wav_bytes,
+            file_options={"content-type": "audio/wav", "upsert": "true"}
+        )
         
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "x-upsert": "true"
-        }
-
-        # Usar 'files' en lugar de 'data' evita problemas de parseo binario en la API de Supabase Storage
-        files = {
-            'file': (filename, wav_bytes, 'audio/wav')
-        }
-
-        response = requests.post(url, headers=headers, files=files)
+        # Obtener la URL pública oficial
+        public_url_response = supabase.storage.from_("jarvis-audios").get_public_url(filename)
         
-        if response.status_code in [200, 201]:
-            # Construir y retornar la URL pública oficial limpia
-            public_url = f"{SUPABASE_URL}/storage/v1/object/public/jarvis-audios/{filename}"
+        # El SDK de supabase puede retornar un string o un dict dependiendo de la versión
+        if isinstance(public_url_response, dict):
+            public_url = public_url_response.get("publicUrl") or public_url_response.get("public_url")
+        else:
+            public_url = public_url_response
+
+        if public_url:
             return public_url
         else:
-            print(f"❌ Error en Supabase HTTP {response.status_code}: {response.text}")
-            return f"Error al subir: {response.status_code}"
+            # Fallback a construcción manual si el helper no la devuelve directa
+            return f"{SUPABASE_URL}/storage/v1/object/public/jarvis-audios/{filename}"
 
     except Exception as e:
-        print(f"❌ Error crítico subiendo a Supabase: {e}")
+        print(f"❌ Error crítico subiendo a Supabase con SDK: {e}")
         return f"Error al subir: {e}"
         
 @app.get("/", response_class=HTMLResponse)
@@ -170,7 +167,7 @@ def home():
         <title>JARVIS Interface</title>
         <style>
             body { background: #000; color: #00ffcc; font-family: 'Courier New', monospace; text-align: center; padding-top: 50px; }
-            button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; }
+            button { background: #002222; border: 1px solid #00ffcc; color: #00ffcc; padding: 20px; font-size: 20px; cursor: pointer; border-radius: 8px; margin: 10px; }
             button:hover { background: #004444; }
             #status { margin-top: 20px; font-size: 18px; }
         </style>
@@ -178,12 +175,24 @@ def home():
     <body>
         <h1>JARVIS</h1>
         <button id="start-btn">🎙️ ACTIVAR MODO VOZ</button>
+        <br>
+        <button id="play-btn" style="display:none;">🔊 REPRODUCIR ÚLTIMO AUDIO</button>
         <p id="status">Esperando comandos...</p>
 
         <script>
             const btn = document.getElementById('start-btn');
+            const playBtn = document.getElementById('play-btn');
             const status = document.getElementById('status');
             
+            let ultimoAudioUrl = null;
+
+            playBtn.onclick = () => {
+                if (ultimoAudioUrl) {
+                    const audio = new Audio(ultimoAudioUrl);
+                    audio.play().catch(e => console.log("Error al reproducir audio:", e));
+                }
+            };
+
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 status.innerText = "Tu navegador no soporta reconocimiento de voz. Usa Google Chrome.";
@@ -217,9 +226,14 @@ def home():
                         if(data.status === "ok") {
                             status.innerText = "JARVIS: " + data.respuesta_texto;
                             
-                            if(data.audio_url) {
+                            if(data.audio_url && !data.audio_url.includes("Error")) {
+                                ultimoAudioUrl = data.audio_url;
+                                playBtn.style.display = "inline-block";
                                 const audio = new Audio(data.audio_url);
-                                audio.play().catch(e => console.log("Error al reproducir audio:", e));
+                                audio.play().catch(e => {
+                                    console.log("Reproducción automática bloqueada por el navegador:", e);
+                                    // El usuario puede usar el botón de respaldo si el navegador bloquea el autoplay
+                                });
                             }
                         } else {
                             status.innerText = "Error: " + (data.message || "Respuesta inválida");
@@ -251,7 +265,7 @@ async def procesar(data: dict):
         timestamp_file = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"audio_{timestamp_file}.wav"
         
-        # 4. Subir a Supabase
+        # 4. Subir a Supabase usando el SDK oficial
         public_url = subir_a_supabase(audio_bytes, filename)
         
         # 5. Registrar en Google Sheets
@@ -269,7 +283,7 @@ async def procesar(data: dict):
         except Exception as e:
             print(f"❌ Error enviando notificación a Pipedream: {e}")
 
-        # 7. Retornar respuesta compatible con el script de la interfaz
+        # 7. Retornar respuesta compatible
         return {
             "status": "ok",
             "respuesta_texto": response_text,
