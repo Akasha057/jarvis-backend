@@ -87,7 +87,6 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
-            # Usando Gemini 3.6 Flash
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
@@ -156,7 +155,7 @@ def subir_a_drive_y_registrar(texto: str, wav_bytes: bytes, filename: str):
         print(f"⚠️ Aviso no crítico (Drive/Sheets): {e}")
         return "Error al guardar en Drive"
 
-# ==================== ENDPOINTS ====================
+# ==================== ENDPOINTS DE LA API ====================
 
 @app.get("/sessions")
 def get_sessions():
@@ -211,7 +210,7 @@ def procesar(payload: PromptRequest):
         print(f"🤖 Consultando a Gemini para: '{user_text}'")
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
-        # 2. Generar audio con ElevenLabs (con respaldo en caso de fallo de cuota/clave)
+        # 2. Generar audio con ElevenLabs y convertir a WAV
         audio_b64 = ""
         wav_bytes = b""
         try:
@@ -232,7 +231,7 @@ def procesar(payload: PromptRequest):
                 wav_bytes = wav_io.getvalue()
                 audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
         except Exception as audio_err:
-            print(f"⚠️ Error generando audio con ElevenLabs (continuando solo con texto): {audio_err}")
+            print(f"⚠️ Error generando audio con ElevenLabs: {audio_err}")
 
         # 3. Subir a Drive (si hay audio)
         if wav_bytes:
