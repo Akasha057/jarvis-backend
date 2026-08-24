@@ -234,7 +234,8 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
                 model="gemini-2.5-flash",
                 contents=user_text,
                 config=types.GenerateContentConfig(
-                    system_instruction=system_instruction_text
+                    system_instruction=system_instruction_text,
+                    temperature=0.7
                 )
             )
             if response and response.text:
@@ -244,8 +245,7 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
             continue
 
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
-
-
+    
 # ============================================================
 # Frontend y Endpoints REST
 # ============================================================
