@@ -9,7 +9,7 @@ import urllib.parse
 from enum import Enum
 from typing import Optional
 from zoneinfo import ZoneInfo
-
+import traceback
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -180,7 +180,7 @@ def obtener_clima_actual(ciudad: str) -> str:
 
 def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     if not GEMINI_KEYS:
-        raise ValueError("No hay API keys de Gemini disponibles.")
+        raise ValueError("No se encontraron API Keys configuradas en GEMINI_API_KEYS ni GEMINI_API_KEY.")
 
     info_geo = obtener_ubicacion_por_ip(client_ip)
     ciudad_actual = info_geo["ciudad"]
@@ -211,19 +211,17 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
         if ciudad_objetivo and ciudad_objetivo not in ["clima", "tiempo", "temperatura", "el"]:
             clima_info = obtener_clima_actual(ciudad_objetivo)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO °C): Clima en {ciudad_objetivo}: {clima_info}"
         else:
             clima_info = obtener_clima_actual(ciudad_actual)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO °C): Clima actual ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
 
-    system_instruction_text = (
-        f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
-        f"La hora local exacta en su ubicación es {hora_actual}. "
-        f"{contexto_extra}"
-        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
-        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
-        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
+    system_instruction = (
+        f"Eres J.A.R.V.I.S., un asistente de IA avanzado, formal y eficiente. "
+        f"Ubicación del usuario: {ciudad_actual}, {provincia_actual}, {pais_actual}. "
+        f"Hora local: {hora_actual}. {contexto_extra}\n"
+        "REGLA 1: Respuestas directas, concisas y conversacionales.\n"
+        "REGLA 2: Sistema métrico (°C)."
     )
 
     ultimo_error = None
@@ -233,18 +231,57 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=user_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction_text,
-                    temperature=0.7
-                )
+                config={
+                    "system_instruction": system_instruction,
+                    "temperature": 0.7,
+                }
             )
             if response and response.text:
                 return response.text
         except Exception as e:
+            print(f"⚠️ Error con la API Key (...{api_key[-5:] if len(api_key)>5 else '***'}): {e}")
             ultimo_error = e
             continue
 
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+
+
+@app.post("/procesar")
+def procesar(payload: PromptRequest, request: Request):
+    try:
+        user_text = payload.text
+        client_ip = request.headers.get("x-forwarded-for")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        else:
+            client_ip = request.client.host
+
+        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
+
+        audio_b64 = ""
+        if eleven_client:
+            try:
+                audio_stream = eleven_client.text_to_speech.convert(
+                    text=respuesta_texto[:250],
+                    voice_id="OqoIeNOqjjjkwABBwfFl",
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128"
+                )
+                audio_bytes = b"".join(chunk for chunk in audio_stream)
+                # Si Render no tiene ffmpeg instalado, enviamos el mp3 en base64 directo
+                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+            except Exception as audio_err:
+                print(f"⚠️ Audio omitido: {audio_err}")
+
+        return {
+            "status": "ok",
+            "respuesta_texto": respuesta_texto,
+            "audio_base64": audio_b64
+        }
+    except Exception as e:
+        print("❌ ERROR CRÍTICO EN /procesar:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     
 # ============================================================
 # Frontend y Endpoints REST
