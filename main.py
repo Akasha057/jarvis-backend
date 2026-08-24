@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pydub import AudioSegment
 from google import genai
+from google.genai import types
 from elevenlabs import ElevenLabs
 import requests
 
@@ -215,6 +216,16 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
             clima_info = obtener_clima_actual(ciudad_actual)
             contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
 
+    system_instruction_text = (
+        f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
+        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
+        f"La hora local exacta en su ubicación es {hora_actual}. "
+        f"{contexto_extra}"
+        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
+        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
+        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
+    )
+
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
@@ -222,17 +233,9 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=user_text,
-                config={
-                    "system_instruction": (
-                        f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-                        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
-                        f"La hora local exacta en su ubicación es {hora_actual}. "
-                        f"{contexto_extra}"
-                        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
-                        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
-                        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
-                    )
-                }
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction_text
+                )
             )
             if response and response.text:
                 return response.text
