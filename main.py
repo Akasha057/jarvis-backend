@@ -82,7 +82,7 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",  # <--- Versión actualizada solicitada
                 contents=contents,
                 config={
                     "system_instruction": (
@@ -126,7 +126,7 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
 
 @app.get("/")
 def home():
-    return {"status": "online", "system": "J.A.R.V.I.S. WebSocket Gateway activo"}
+    return {"status": "online", "system": "J.A.R.V.I.S. WebSocket Gateway activo (Gemini 3.6 Flash)"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
