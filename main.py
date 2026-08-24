@@ -28,7 +28,6 @@ def extraer_keys(raw_val: str) -> list[str]:
     
     raw_val = raw_val.strip()
     
-    # Si viene en formato JSON array [ "key1", "key2" ]
     if raw_val.startswith("["):
         try:
             parsed = json.loads(raw_val)
@@ -37,33 +36,29 @@ def extraer_keys(raw_val: str) -> list[str]:
         except Exception:
             pass
             
-    # Si viene separado por comas o líneas
     limpio = raw_val.replace("[", "").replace("]", "").replace("\n", "").replace('"', '').replace("'", "")
     return [k.strip() for k in limpio.split(",") if k.strip()]
 
-# Lee ambas variables de entorno
 env_keys_raw = os.environ.get("GEMINI_API_KEYS", "")
 env_key_single = os.environ.get("GEMINI_API_KEY", "")
 
-# Procesa y combina ambas fuentes sin duplicados
 todas_las_keys = extraer_keys(env_keys_raw) + extraer_keys(env_key_single)
 GEMINI_KEYS = list(dict.fromkeys(todas_las_keys))
 
-ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY", "")
-WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
+ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY", "").strip().strip('"').strip("'")
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "").strip()
 
-# Secrets de seguridad (Configúralos en el panel de Render)
 JARVIS_AGENT_SECRET = os.environ.get("JARVIS_AGENT_SECRET", "default_agent_secret_change_me")
 JARVIS_SENTINEL_SECRET = os.environ.get("JARVIS_SENTINEL_SECRET", "default_sentinel_secret_change_me")
 
 eleven_client = ElevenLabs(api_key=ELEVEN_API_KEY) if ELEVEN_API_KEY else None
 
 # ---------------------------------------------------------
-# ESTADO GLOBAL Y ADMINISTRADOR DE WEBSOCKETS
+# ESTADO GLOBAL
 # ---------------------------------------------------------
 class EcosistemaState:
     def __init__(self):
-        self.pc_status = "offline"  # "offline", "online", "waking"
+        self.pc_status = "offline"
         self.pc_last_seen = None
         self.sentinel_connected = False
         self.pc_agent_ws: WebSocket = None
@@ -173,7 +168,7 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     raise Exception(f"Fallo en llamadas a Gemini. Último error registrado: {ultimo_error}")
 
 # ---------------------------------------------------------
-# ENDPOINTS Y RUTAS
+# ENDPOINTS
 # ---------------------------------------------------------
 class PromptRequest(BaseModel):
     text: str
@@ -192,7 +187,6 @@ async def procesar(payload: PromptRequest, request: Request):
         user_text = payload.text
         texto_lower = user_text.lower()
 
-        # Interceptación de comandos físicos
         if "prende la pc" in texto_lower or "encender la pc" in texto_lower:
             if state.pc_status == "online":
                 respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
@@ -201,7 +195,7 @@ async def procesar(payload: PromptRequest, request: Request):
                 state.pc_status = "waking"
                 respuesta_texto = "Enviando orden de encendido vía el centinela local..."
             else:
-                respuesta_texto = "No puedo encender la PC en este momento porque el centinela local (iPhone 7) está desconectado de la red."
+                respuesta_texto = "No puedo encender la PC en este momento porque el centinela local está desconectado de la red."
         elif "apaga la pc" in texto_lower or "apagar la pc" in texto_lower:
             if state.pc_agent_ws and state.pc_status == "online":
                 await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
@@ -222,13 +216,15 @@ async def procesar(payload: PromptRequest, request: Request):
                     output_format="mp3_44100_128"
                 )
                 audio_bytes = b"".join(chunk for chunk in audio_stream)
+                
+                # Conversión a formato WAV 44.1kHz Monocanal
                 audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
                 audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
                 wav_io = io.BytesIO()
                 audio_wav.export(wav_io, format="wav")
                 audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
             except Exception as audio_err:
-                print(f"⚠️ Audio omitido: {audio_err}")
+                print(f"❌ Error en ElevenLabs: {audio_err}")
 
         return {
             "status": "ok",
@@ -241,7 +237,7 @@ async def procesar(payload: PromptRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------
-# WEBSOCKETS PARA CONTROL REMOTO
+# WEBSOCKETS
 # ---------------------------------------------------------
 @app.websocket("/ws/agent")
 async def websocket_agent(websocket: WebSocket):
@@ -254,17 +250,14 @@ async def websocket_agent(websocket: WebSocket):
     state.pc_agent_ws = websocket
     state.pc_status = "online"
     state.pc_last_seen = datetime.datetime.now().isoformat()
-    print("💻 Agente de PC Windows Conectado.")
 
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
             state.pc_last_seen = datetime.datetime.now().isoformat()
-            # Procesar pings/heartbeats del agente
     except WebSocketDisconnect:
         state.pc_agent_ws = None
         state.pc_status = "offline"
-        print("💻 Agente de PC Windows Desconectado.")
 
 @app.websocket("/ws/sentinel")
 async def websocket_sentinel(websocket: WebSocket):
@@ -276,18 +269,16 @@ async def websocket_sentinel(websocket: WebSocket):
     await websocket.accept()
     state.sentinel_ws = websocket
     state.sentinel_connected = True
-    print("📱 Centinela iPhone 7 Conectado.")
 
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
         state.sentinel_ws = None
         state.sentinel_connected = False
-        print("📱 Centinela iPhone 7 Desconectado.")
 
 # ---------------------------------------------------------
-# FRONTEND HTML
+# FRONTEND HTML CON BOTÓN DE REPRODUCCIÓN Y DESCARGA WAV
 # ---------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -339,7 +330,7 @@ HTML_FRONTEND = """
         .send-btn { background: var(--accent); color: #111b21; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; }
         .send-btn:hover { background: var(--accent-hover); }
         #status { font-size: 12px; color: var(--text-muted); }
-        .action-link-btn { margin-top: 8px; background: #182229; border: 1px solid var(--accent); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 6px; }
+        .action-link-btn { margin-top: 8px; background: #182229; border: 1px solid var(--accent); color: var(--accent); padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
         .action-link-btn:hover { background: var(--accent); color: #111b21; }
     </style>
 </head>
@@ -441,14 +432,7 @@ HTML_FRONTEND = """
                     appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, `jarvis_${Date.now()}.wav`);
 
                     if (audioSrc) {
-                        currentAudio = new Audio(audioSrc);
-                        statusSpan.innerText = "J.A.R.V.I.S. hablando...";
-                        currentAudio.play().catch(e => console.log(e));
-                        currentAudio.onended = () => {
-                            currentAudio = null;
-                            if (isConversing) try { recognition.start(); } catch(e){}
-                            else statusSpan.innerText = "Inactivo";
-                        };
+                        reproducirAudio(audioSrc);
                     } else {
                         statusSpan.innerText = "Inactivo";
                         if (isConversing) try { recognition.start(); } catch(e){}
@@ -459,6 +443,18 @@ HTML_FRONTEND = """
                 appendMessageUI("⚠️ Error de conexión.", 'jarvis');
                 if (isConversing) setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
             }
+        }
+
+        function reproducirAudio(audioSrc) {
+            interrumpirJarvis();
+            currentAudio = new Audio(audioSrc);
+            statusSpan.innerText = "J.A.R.V.I.S. hablando...";
+            currentAudio.play().catch(e => console.log("Autoplay bloqueado:", e));
+            currentAudio.onended = () => {
+                currentAudio = null;
+                if (isConversing) try { recognition.start(); } catch(e){}
+                else statusSpan.innerText = "Inactivo";
+            };
         }
 
         function appendMessageUI(text, sender, audioSrc = null, fileName = null) {
@@ -487,11 +483,17 @@ HTML_FRONTEND = """
                 };
                 actionsContainer.appendChild(pdfBtn);
 
-                // Botón Descargar Audio .WAV
+                // Botones de Audio (Reproducir y Descargar)
                 if (audioSrc) {
+                    const playBtn = document.createElement('button');
+                    playBtn.className = 'action-link-btn';
+                    playBtn.innerHTML = '🔊 Reproducir';
+                    playBtn.onclick = () => reproducirAudio(audioSrc);
+                    actionsContainer.appendChild(playBtn);
+
                     const wavBtn = document.createElement('a');
                     wavBtn.className = 'action-link-btn';
-                    wavBtn.innerHTML = '🔊 Descargar WAV';
+                    wavBtn.innerHTML = '💾 Descargar .WAV';
                     wavBtn.href = audioSrc;
                     wavBtn.download = fileName || `jarvis_${Date.now()}.wav`;
                     actionsContainer.appendChild(wavBtn);
@@ -506,4 +508,3 @@ HTML_FRONTEND = """
     </script>
 </body>
 </html>
-"""
