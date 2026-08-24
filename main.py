@@ -19,10 +19,35 @@ from google.genai import types
 app = FastAPI(title="J.A.R.V.I.S. Cloud Brain")
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# CONFIGURACIÓN DE API KEYS DE GEMINI (ROBUSTA Y MULTI-FUENTE)
 # ---------------------------------------------------------
-GEMINI_KEYS_RAW = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY", "")
-GEMINI_KEYS = [k.strip() for k in GEMINI_KEYS_RAW.split(",") if k.strip()]
+def extraer_keys(raw_val: str) -> list[str]:
+    """Extrae y limpia claves de API, soporta JSON, listas por comas o clave simple."""
+    if not raw_val:
+        return []
+    
+    raw_val = raw_val.strip()
+    
+    # Si viene en formato JSON array [ "key1", "key2" ]
+    if raw_val.startswith("["):
+        try:
+            parsed = json.loads(raw_val)
+            if isinstance(parsed, list):
+                return [str(k).strip() for k in parsed if str(k).strip()]
+        except Exception:
+            pass
+            
+    # Si viene separado por comas o líneas
+    limpio = raw_val.replace("[", "").replace("]", "").replace("\n", "").replace('"', '').replace("'", "")
+    return [k.strip() for k in limpio.split(",") if k.strip()]
+
+# Lee ambas variables de entorno
+env_keys_raw = os.environ.get("GEMINI_API_KEYS", "")
+env_key_single = os.environ.get("GEMINI_API_KEY", "")
+
+# Procesa y combina ambas fuentes sin duplicados
+todas_las_keys = extraer_keys(env_keys_raw) + extraer_keys(env_key_single)
+GEMINI_KEYS = list(dict.fromkeys(todas_las_keys))
 
 ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY", "")
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
@@ -128,8 +153,12 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
+        key_limpia = str(api_key).strip().strip('"').strip("'").strip('[]')
+        if not key_limpia:
+            continue
+
         try:
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=key_limpia)
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=user_text,
@@ -458,7 +487,7 @@ HTML_FRONTEND = """
                 };
                 actionsContainer.appendChild(pdfBtn);
 
-                // Botón Descargar Audio .WAV (solo si viene un audio generado)
+                // Botón Descargar Audio .WAV
                 if (audioSrc) {
                     const wavBtn = document.createElement('a');
                     wavBtn.className = 'action-link-btn';
