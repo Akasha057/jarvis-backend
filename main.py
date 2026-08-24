@@ -31,7 +31,7 @@ if single_key and single_key.strip() not in GEMINI_KEYS:
     GEMINI_KEYS.insert(0, single_key.strip())
 
 if not GEMINI_KEYS:
-    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas.")
+    print("⚠️ ¡Atención! No se encontraron claves de Gemini configuradas en las variables de entorno.")
 
 # Inicializar ElevenLabs con manejo defensivo
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -40,48 +40,35 @@ eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY els
 class PromptRequest(BaseModel):
     text: str
 
-def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Enruta inteligentemente la solicitud entre Gemini 3.1 Pro y Gemini 3.6 Flash según la complejidad, con rotación segura."""
+def generar_respuesta_flash(user_text: str) -> str:
+    """Utiliza exclusivamente gemini-3.6-flash con rotación de claves si hay varias disponibles."""
     if not GEMINI_KEYS:
-        raise ValueError("No hay API keys de Gemini disponibles.")
-
-    # Lógica de enrutamiento basada en palabras clave o longitud
-    texto_lower = user_text.lower()
-    palabras_pro = ["programa", "código", "analiza", "matemática", "razona", "complejo", "algoritmo"]
-    
-    if any(p in texto_lower for p in palabras_pro) or len(user_text) > 200:
-        # Tareas complejas: Usamos Gemini 3.1 Pro para razonamiento profundo
-        modelos_candidatos = ["gemini-3.1-pro", "gemini-3.6-flash"]
-    else:
-        # Tareas cotidianas y rápidas: Priorizamos Gemini 3.6 Flash
-        modelos_candidatos = ["gemini-3.6-flash", "gemini-3.1-pro"]
+        raise ValueError("No hay API keys de Gemini configuradas. Revisa GEMINI_API_KEY o GEMINI_API_KEYS.")
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
-        client = genai.Client(api_key=api_key)
-        for model_name in modelos_candidatos:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=user_text,
-                    config={
-                        "system_instruction": (
-                            "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-                            "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
-                            "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
-                        ),
-                        # 🔍 Habilitamos la búsqueda web para datos en tiempo real
-                        "tools": [{"google_search": {}}]
-                    }
-                )
-                if response and response.text:
-                    return response.text
-            except Exception as e:
-                print(f"⚠️ Modelo {model_name} con key falló: {e}")
-                ultimo_error = e
-                continue
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=user_text,
+                config={
+                    "system_instruction": (
+                        "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
+                        "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
+                        "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
+                    ),
+                    "tools": [{"google_search": {}}]
+                }
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            print(f"⚠️ Clave de Gemini falló con gemini-3.6-flash: {e}")
+            ultimo_error = e
+            continue
 
-    raise Exception(f"Todas las opciones y API keys de Gemini fallaron. Último error: {ultimo_error}")
+    raise Exception(f"Todas las API keys de Gemini fallaron en gemini-3.6-flash. Último error: {ultimo_error}")
     
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -92,13 +79,10 @@ def home():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. - Omni Chat</title>
-        <!-- Markdown Parser & Code Highlighter -->
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-        <!-- jsPDF para descarga de PDFs -->
         <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-        
         <style>
             :root {
                 --bg-main: #0b131a;
@@ -112,141 +96,47 @@ def home():
             }
             * { box-sizing: border-box; }
             body { 
-                background: var(--bg-main); 
-                color: var(--text-main); 
+                background: var(--bg-main); color: var(--text-main); 
                 font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
-                margin: 0; 
-                padding: 0; 
-                display: flex; 
-                flex-direction: column; 
-                height: 100vh; 
-                overflow: hidden; 
+                margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; 
             }
-            
-            header { 
-                padding: 12px 20px; 
-                display: flex; 
-                align-items: center; 
-                justify-content: space-between; 
-                background: var(--bg-panel); 
-                border-bottom: 1px solid #222d34;
-            }
-            
-            #chat-container { 
-                flex: 1; 
-                overflow-y: auto; 
-                padding: 20px; 
-                display: flex; 
-                flex-direction: column; 
-                gap: 15px; 
-                max-width: 900px; 
-                width: 100%; 
-                margin: 0 auto; 
-            }
-            
-            .message-wrapper { 
-                display: flex; 
-                flex-direction: column; 
-                max-width: 80%; 
-            }
+            header { padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-panel); border-bottom: 1px solid #222d34; }
+            #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; max-width: 900px; width: 100%; margin: 0 auto; }
+            .message-wrapper { display: flex; flex-direction: column; max-width: 80%; }
             .message-wrapper.user { align-self: flex-end; }
             .message-wrapper.jarvis { align-self: flex-start; }
-            
-            .bubble { 
-                padding: 10px 14px; 
-                border-radius: 8px; 
-                font-size: 14px; 
-                line-height: 1.5; 
-                word-wrap: break-word; 
-            }
+            .bubble { padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
             .user .bubble { background: var(--bg-bubble-user); color: #fff; border-top-right-radius: 0; }
             .jarvis .bubble { background: var(--bg-bubble-jarvis); color: var(--text-main); border-top-left-radius: 0; border: 1px solid #2a3942; }
-            
             pre { background: #0b141a !important; padding: 12px; border-radius: 6px; overflow-x: auto; border: 1px solid #222d34; }
             code { font-family: 'Courier New', Courier, monospace; }
             .code-header { background: #182229; padding: 4px 8px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-top: 8px; }
             .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; }
-
-            footer { 
-                padding: 12px 20px; 
-                background: var(--bg-panel); 
-                display: flex; 
-                align-items: center; 
-                justify-content: center;
-                gap: 12px;
-                border-top: 1px solid #222d34;
-            }
-            
-            .input-box-container { 
-                background: #2a3942; 
-                border-radius: 8px; 
-                padding: 6px 12px; 
-                display: flex; 
-                align-items: center; 
-                gap: 10px; 
-                width: 100%; 
-                max-width: 900px; 
-            }
-            
-            textarea { 
-                flex: 1; 
-                background: none; 
-                border: none; 
-                color: white; 
-                font-size: 14px; 
-                outline: none; 
-                resize: none; 
-                max-height: 100px; 
-                font-family: inherit; 
-            }
+            footer { padding: 12px 20px; background: var(--bg-panel); display: flex; align-items: center; justify-content: center; gap: 12px; border-top: 1px solid #222d34; }
+            .input-box-container { background: #2a3942; border-radius: 8px; padding: 6px 12px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 900px; }
+            textarea { flex: 1; background: none; border: none; color: white; font-size: 14px; outline: none; resize: none; max-height: 100px; font-family: inherit; }
             textarea::placeholder { color: var(--text-muted); }
-            
             .action-buttons { display: flex; align-items: center; gap: 8px; }
-            .icon-btn { 
-                background: none; 
-                border: none; 
-                color: var(--text-muted); 
-                font-size: 18px; 
-                cursor: pointer; 
-                padding: 6px; 
-                border-radius: 50%; 
-                display: flex; 
-                align-items: center; 
-                justify-content: center; 
-            }
+            .icon-btn { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
             .icon-btn:hover { color: var(--text-main); }
             .icon-btn.active { color: #d9534f; }
-            
-            .send-btn {
-                background: var(--accent);
-                color: #111b21;
-                border: none;
-                padding: 6px 14px;
-                border-radius: 6px;
-                font-weight: 600;
-                cursor: pointer;
-                font-size: 13px;
-            }
+            .send-btn { background: var(--accent); color: #111b21; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; }
             .send-btn:hover { background: var(--accent-hover); }
-
             #status { font-size: 12px; color: var(--text-muted); }
             .action-link-btn { margin-top: 8px; background: #182229; border: 1px solid var(--accent); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 6px; }
             .action-link-btn:hover { background: var(--accent); color: #111b21; }
         </style>
     </head>
     <body>
-
         <header>
-            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S.</span>
+            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S. (Gemini 3.6 Flash)</span>
             <span id="status">Inactivo</span>
         </header>
-
         <div id="chat-container">
             <div class="message-wrapper jarvis">
-                <div class="bubble">Sistema enlazado. Puedes hablar por voz, escribir por teclado o usar el modo continuo.</div>
+                <div class="bubble">Sistema enlazado a Gemini 3.6 Flash. Listo para operar.</div>
             </div>
         </div>
-
         <footer>
             <div class="input-box-container">
                 <textarea id="user-input" rows="1" placeholder="Escribe un mensaje a J.A.R.V.I.S..." oninput="autoExpand(this)"></textarea>
@@ -256,12 +146,10 @@ def home():
                 </div>
             </div>
         </footer>
-
         <script>
             const chatContainer = document.getElementById('chat-container');
             const statusSpan = document.getElementById('status');
             const micBtn = document.getElementById('mic-btn');
-
             let isConversing = false;
             let recognition = null;
             let currentAudio = null;
@@ -273,7 +161,7 @@ def home():
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                statusSpan.innerText = "Voz no soportada en este navegador.";
+                statusSpan.innerText = "Voz no soportada.";
                 micBtn.style.display = 'none';
             } else {
                 recognition = new SpeechRecognition();
@@ -281,23 +169,13 @@ def home():
                 recognition.interimResults = false;
                 recognition.continuous = false;
 
-                recognition.onstart = () => { 
-                    statusSpan.innerText = "Escuchando..."; 
-                    micBtn.classList.add('active');
-                };
-                
-                recognition.onresult = async (event) => {
-                    const transcript = event.results[0][0].transcript;
-                    await enviarTexto(transcript);
-                };
-
+                recognition.onstart = () => { statusSpan.innerText = "Escuchando..."; micBtn.classList.add('active'); };
+                recognition.onresult = async (event) => { await enviarTexto(event.results[0][0].transcript); };
                 recognition.onerror = (event) => {
-                    console.log("Error de voz:", event.error);
                     if (isConversing && event.error !== 'aborted') {
                         setTimeout(() => { try { recognition.start(); } catch(e){} }, 1000);
                     }
                 };
-
                 recognition.onend = () => {
                     if (isConversing && statusSpan.innerText === "Escuchando...") {
                         try { recognition.start(); } catch(e){}
@@ -308,10 +186,7 @@ def home():
             }
 
             function interrumpirJarvis() {
-                if (currentAudio) {
-                    currentAudio.pause();
-                    currentAudio = null;
-                }
+                if (currentAudio) { currentAudio.pause(); currentAudio = null; }
             }
 
             function toggleVoz() {
@@ -337,16 +212,12 @@ def home():
             }
 
             document.getElementById('user-input').onkeydown = (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    enviarMensaje();
-                }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviarMensaje(); }
             };
 
             async function enviarTexto(text) {
                 interrumpirJarvis();
                 if (isConversing) { try { recognition.stop(); } catch(e){} }
-
                 appendMessageUI(text, 'user');
                 statusSpan.innerText = "Procesando...";
 
@@ -363,26 +234,19 @@ def home():
                     }
 
                     const data = await response.json();
-
                     if (data.status === "ok") {
                         const audioSrc = data.audio_base64 ? "data:audio/wav;base64," + data.audio_base64 : null;
                         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                        const fileName = `jarvis_${timestamp}.wav`;
-
-                        appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, fileName);
+                        appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, `jarvis_${timestamp}.wav`);
 
                         if (audioSrc) {
                             currentAudio = new Audio(audioSrc);
                             statusSpan.innerText = "J.A.R.V.I.S. hablando...";
-                            currentAudio.play().catch(e => console.log("Error al reproducir:", e));
-
+                            currentAudio.play().catch(e => console.log(e));
                             currentAudio.onended = () => {
                                 currentAudio = null;
-                                if (isConversing) {
-                                    try { recognition.start(); } catch(e){}
-                                } else {
-                                    statusSpan.innerText = "Inactivo";
-                                }
+                                if (isConversing) { try { recognition.start(); } catch(e){} }
+                                else { statusSpan.innerText = "Inactivo"; }
                             };
                         } else {
                             statusSpan.innerText = "Inactivo";
@@ -391,37 +255,27 @@ def home():
                     }
                 } catch (err) {
                     statusSpan.innerText = "Error: " + err.message;
-                    appendMessageUI("⚠️ Ocurrió un error al procesar tu solicitud en el servidor.", 'jarvis');
-                    console.error(err);
-                    if (isConversing) { 
-                        setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000); 
-                    }
+                    appendMessageUI("⚠️ Ocurrió un error al procesar tu solicitud.", 'jarvis');
+                    if (isConversing) { setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000); }
                 }
             }
 
             function appendMessageUI(text, sender, audioSrc = null, fileName = null) {
                 const wrapper = document.createElement('div');
                 wrapper.className = `message-wrapper ${sender}`;
-
                 const bubble = document.createElement('div');
                 bubble.className = 'bubble';
 
                 if (sender === 'user') {
                     bubble.innerText = text;
                 } else {
-                    if (typeof marked !== 'undefined') {
-                        bubble.innerHTML = marked.parse(text);
-                    } else {
-                        bubble.innerText = text;
-                    }
-                    
+                    bubble.innerHTML = typeof marked !== 'undefined' ? marked.parse(text) : text;
                     bubble.querySelectorAll('pre').forEach(pre => {
                         const header = document.createElement('div');
                         header.className = 'code-header';
                         header.innerHTML = `<span>código</span> <button class="copy-btn" onclick="copiarCodigo(this)">Copiar</button>`;
                         pre.parentNode.insertBefore(header, pre);
                     });
-
                     const pdfBtn = document.createElement('button');
                     pdfBtn.className = 'action-link-btn';
                     pdfBtn.innerHTML = '📄 Descargar PDF';
@@ -437,13 +291,10 @@ def home():
                         bubble.appendChild(wavBtn);
                     }
                 }
-
                 wrapper.appendChild(bubble);
                 chatContainer.appendChild(wrapper);
                 chatContainer.scrollTop = chatContainer.scrollHeight;
-                if (typeof hljs !== 'undefined') {
-                    hljs.highlightAll();
-                }
+                if (typeof hljs !== 'undefined') { hljs.highlightAll(); }
             }
 
             function copiarCodigo(btn) {
@@ -458,7 +309,6 @@ def home():
                 const doc = new jsPDF();
                 doc.setFont("Helvetica", "normal");
                 doc.setFontSize(12);
-                
                 const cleanText = text.replace(/<[^>]*>?/gm, '');
                 const splitText = doc.splitTextToSize(cleanText, 180);
                 doc.text(splitText, 15, 20);
@@ -473,11 +323,8 @@ def home():
 def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
+        respuesta_texto = generar_respuesta_flash(user_text)
 
-        # 1. Generar respuesta usando el enrutador inteligente de modelos
-        respuesta_texto = generar_respuesta_con_fallback(user_text)
-
-        # 2. Generar audio con ElevenLabs (si está disponible)
         audio_b64 = ""
         wav_bytes = b""
         if eleven_client:
@@ -489,14 +336,11 @@ def procesar(payload: PromptRequest):
                     output_format="mp3_44100_128"
                 )
                 audio_bytes = b"".join(chunk for chunk in audio_stream)
-
-                # 3. Convertir MP3 a WAV
                 audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
                 audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
                 wav_io = io.BytesIO()
                 audio_wav.export(wav_io, format="wav")
                 wav_bytes = wav_io.getvalue()
-
                 audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
             except Exception as audio_err:
                 print(f"⚠️ Error generando audio con ElevenLabs: {audio_err}")
@@ -506,7 +350,6 @@ def procesar(payload: PromptRequest):
             "respuesta_texto": respuesta_texto,
             "audio_base64": audio_b64
         }
-
     except Exception as e:
         print(f"❌ Error crítico en /procesar: {e}")
         raise HTTPException(status_code=500, detail=str(e))
