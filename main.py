@@ -78,7 +78,7 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>J.A.R.V.I.S. - Omni Chat</title>
+        <title>J.A.R.V.I.S.</title>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
@@ -129,12 +129,12 @@ def home():
     </head>
     <body>
         <header>
-            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S. (Gemini 3.6 Flash)</span>
+            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S.</span>
             <span id="status">Inactivo</span>
         </header>
         <div id="chat-container">
             <div class="message-wrapper jarvis">
-                <div class="bubble">Sistema enlazado a Gemini 3.6 Flash. Listo para operar.</div>
+                <div class="bubble">Sistema en línea. Listo para operar.</div>
             </div>
         </div>
         <footer>
