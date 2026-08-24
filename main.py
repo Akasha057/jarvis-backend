@@ -70,7 +70,7 @@ def generar_respuesta_con_fallback(user_text: str) -> str:
             continue
 
     raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
-
+    
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
