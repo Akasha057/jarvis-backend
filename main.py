@@ -467,6 +467,11 @@ HTML_FRONTEND = """
                 bubble.innerText = text;
             } else {
                 bubble.innerHTML = marked.parse(text);
+
+                const actionsContainer = document.createElement('div');
+                actionsContainer.style.marginTop = '8px';
+
+                // Botón Exportar PDF
                 const pdfBtn = document.createElement('button');
                 pdfBtn.className = 'action-link-btn';
                 pdfBtn.innerHTML = '📄 PDF';
@@ -476,7 +481,19 @@ HTML_FRONTEND = """
                     doc.text(text.replace(/<[^>]*>?/gm, ''), 15, 20);
                     doc.save(`jarvis_${Date.now()}.pdf`);
                 };
-                bubble.appendChild(pdfBtn);
+                actionsContainer.appendChild(pdfBtn);
+
+                // Botón Descargar Audio .WAV (solo si viene un audio generado)
+                if (audioSrc) {
+                    const wavBtn = document.createElement('a');
+                    wavBtn.className = 'action-link-btn';
+                    wavBtn.innerHTML = '🔊 Descargar WAV';
+                    wavBtn.href = audioSrc;
+                    wavBtn.download = fileName || `jarvis_${Date.now()}.wav`;
+                    actionsContainer.appendChild(wavBtn);
+                }
+
+                bubble.appendChild(actionsContainer);
             }
             wrapper.appendChild(bubble);
             chatContainer.appendChild(wrapper);
@@ -486,7 +503,6 @@ HTML_FRONTEND = """
 </body>
 </html>
 """
-
 
 @app.get("/", response_class=HTMLResponse)
 def home():
