@@ -82,7 +82,7 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-2.5-flash",  # O gemini-3.6-flash según tu preferencia
+                model="gemini-2.5-flash",
                 contents=contents,
                 config={
                     "system_instruction": (
@@ -98,7 +98,6 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
             if response and response.text:
                 respuesta_texto = response.text
                 
-                # Generación de audio con ElevenLabs (o motor de voz)
                 audio_b64 = ""
                 if eleven_client:
                     try:
@@ -125,10 +124,19 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
 
     raise Exception(f"Todas las API keys fallaron. Error: {ultimo_error}")
 
+@app.get("/")
+def home():
+    return {"status": "online", "system": "J.A.R.V.I.S. WebSocket Gateway activo"}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    client_ip = websocket.client.host
+    client_ip = websocket.headers.get("x-forwarded-for")
+    if client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+    else:
+        client_ip = websocket.client.host
+
     try:
         while True:
             data = await websocket.receive_text()
