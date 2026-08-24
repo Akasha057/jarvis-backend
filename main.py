@@ -3,14 +3,15 @@ import datetime
 import io
 import json
 import os
-import requests
+import urllib.parse
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
-import pytz
+import requests
 
 app = FastAPI()
 
@@ -50,23 +51,23 @@ def obtener_clima_actual(ciudad: str) -> str:
         pass
     return "No disponible en este momento."
 
-import urllib.parse
-
 def generar_respuesta_con_flash(user_text: str) -> str:
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
-    # Contexto temporal global en tiempo real (Buenos Aires y UTC general)
-    ba_tz = pytz.timezone('America/Argentina/Buenos_ Aires')
+    # Contexto temporal global usando ZoneInfo (nativo de Python)
+    try:
+        ba_tz = ZoneInfo("America/Argentina/Buenos_Aires")
+    except Exception:
+        ba_tz = ZoneInfo("UTC")
+        
     hora_actual = datetime.datetime.now(ba_tz).strftime('%H:%M (%d-%m-%Y)')
 
-    # Detección inteligente si el usuario pregunta por clima o hora de una ciudad específica
+    # Detección inteligente si el usuario pregunta por clima de una ciudad específica
     contexto_extra = ""
     texto_lower = user_text.lower()
     
     if "clima" in texto_lower or "tiempo" in texto_lower or "temperatura" in texto_lower:
-        # Extraer posibles ciudades comunes o inyectar una guía para que el modelo identifique
-        # Por defecto, si nombra una ciudad, intentamos buscarla de forma dinámica básica:
         palabras = user_text.split()
         for i, p in enumerate(palabras):
             if p.lower() in ["en", "de", "para"] and i + 1 < len(palabras):
@@ -136,8 +137,6 @@ def home():
             .jarvis .bubble { background: var(--bg-bubble-jarvis); color: var(--text-main); border-top-left-radius: 0; border: 1px solid #2a3942; }
             pre { background: #0b141a !important; padding: 12px; border-radius: 6px; overflow-x: auto; border: 1px solid #222d34; }
             code { font-family: 'Courier New', Courier, monospace; }
-            .code-header { background: #182229; padding: 4px 8px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; border-radius: 6px 6px 0 0; margin-top: 8px; }
-            .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; }
             footer { padding: 12px 20px; background: var(--bg-panel); display: flex; align-items: center; justify-content: center; gap: 12px; border-top: 1px solid #222d34; }
             .input-box-container { background: #2a3942; border-radius: 8px; padding: 6px 12px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 900px; }
             textarea { flex: 1; background: none; border: none; color: white; font-size: 14px; outline: none; resize: none; max-height: 100px; font-family: inherit; }
@@ -314,10 +313,8 @@ def home():
 def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
-        # 1. Generación de texto optimizada y rápida con datos del clima inyectados si aplica
         respuesta_texto = generar_respuesta_con_flash(user_text)
 
-        # 2. Síntesis de voz rápida (primeros 250 caracteres para menor latencia en ElevenLabs)
         audio_b64 = ""
         if eleven_client:
             try:
