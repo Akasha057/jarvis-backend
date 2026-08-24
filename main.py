@@ -41,35 +41,47 @@ class PromptRequest(BaseModel):
     text: str
 
 def generar_respuesta_con_fallback(user_text: str) -> str:
-    """Genera respuesta con Gemini usando gemini-3.6-flash, rotación segura y Google Search."""
+    """Enruta inteligentemente la solicitud entre Gemini 3.1 Pro y Gemini 3.6 Flash según la complejidad, con rotación segura."""
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
+    # Lógica de enrutamiento basada en palabras clave o longitud
+    texto_lower = user_text.lower()
+    palabras_pro = ["programa", "código", "analiza", "matemática", "razona", "complejo", "algoritmo"]
+    
+    if any(p in texto_lower for p in palabras_pro) or len(user_text) > 200:
+        # Tareas complejas: Usamos Gemini 3.1 Pro para razonamiento profundo
+        modelos_candidatos = ["gemini-3.1-pro", "gemini-3.6-flash"]
+    else:
+        # Tareas cotidianas y rápidas: Priorizamos Gemini 3.6 Flash
+        modelos_candidatos = ["gemini-3.6-flash", "gemini-3.1-pro"]
+
     ultimo_error = None
     for api_key in GEMINI_KEYS:
-        try:
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=user_text,
-                config={
-                    "system_instruction": (
-                        "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-                        "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
-                        "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
-                    ),
-                    # 🔍 Habilitamos la búsqueda web para datos en tiempo real
-                    "tools": [{"google_search": {}}]
-                }
-            )
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            print(f"⚠️ API Key falló: {e}")
-            ultimo_error = e
-            continue
+        client = genai.Client(api_key=api_key)
+        for model_name in modelos_candidatos:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=user_text,
+                    config={
+                        "system_instruction": (
+                            "Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
+                            "REGLA CRÍTICA: Da respuestas directas, conversacionales y breves. "
+                            "NUNCA incluyas scripts de programación, explicaciones de código ni de cómo calculas las cosas a menos que el usuario te pida explícitamente que escribas código."
+                        ),
+                        # 🔍 Habilitamos la búsqueda web para datos en tiempo real
+                        "tools": [{"google_search": {}}]
+                    }
+                )
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                print(f"⚠️ Modelo {model_name} con key falló: {e}")
+                ultimo_error = e
+                continue
 
-    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+    raise Exception(f"Todas las opciones y API keys de Gemini fallaron. Último error: {ultimo_error}")
     
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -397,7 +409,6 @@ def home():
                 if (sender === 'user') {
                     bubble.innerText = text;
                 } else {
-                    // Verificación defensiva de marked
                     if (typeof marked !== 'undefined') {
                         bubble.innerHTML = marked.parse(text);
                     } else {
@@ -411,14 +422,12 @@ def home():
                         pre.parentNode.insertBefore(header, pre);
                     });
 
-                    // Botón para descargar PDF de la respuesta
                     const pdfBtn = document.createElement('button');
                     pdfBtn.className = 'action-link-btn';
                     pdfBtn.innerHTML = '📄 Descargar PDF';
                     pdfBtn.onclick = () => generarPDF(text);
                     bubble.appendChild(pdfBtn);
 
-                    // Botón para descargar WAV si está disponible
                     if (audioSrc && fileName) {
                         const wavBtn = document.createElement('a');
                         wavBtn.href = audioSrc;
@@ -465,7 +474,7 @@ def procesar(payload: PromptRequest):
     try:
         user_text = payload.text
 
-        # 1. Generar respuesta con Gemini 3.6 Flash
+        # 1. Generar respuesta usando el enrutador inteligente de modelos
         respuesta_texto = generar_respuesta_con_fallback(user_text)
 
         # 2. Generar audio con ElevenLabs (si está disponible)
