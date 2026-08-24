@@ -5,7 +5,7 @@ import json
 import os
 import urllib.parse
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pydub import AudioSegment
@@ -38,11 +38,38 @@ eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY els
 
 class PromptRequest(BaseModel):
     text: str
+    client_ip: str = None
+
+def obtener_ubicacion_por_ip(ip: str) -> dict:
+    """Detecta de forma autónoma la ciudad, provincia y país basándose en la IP del cliente."""
+    try:
+        # Si es localhost o IP privada, intentamos consultar la IP pública actual de la red
+        url = f"https://ipapi.co/{ip}/json/" if ip and ip not in ["127.0.0.1", "localhost", "::1"] else "https://ipapi.co/json/"
+        headers = {"User-Agent": "curl"}
+        response = requests.get(url, headers=headers, timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "ciudad": data.get("city", "Buenos Aires"),
+                "provincia": data.get("region", "Buenos Aires"),
+                "pais": data.get("country_name", "Argentina"),
+                "timezone": data.get("timezone", "America/Argentina/Buenos_Aires")
+            }
+    except Exception:
+        pass
+    
+    # Valores de respaldo por defecto si falla la red de geolocalización
+    return {
+        "ciudad": "Buenos Aires",
+        "provincia": "Buenos Aires",
+        "pais": "Argentina",
+        "timezone": "America/Argentina/Buenos_Aires"
+    }
 
 def obtener_clima_actual(ciudad: str) -> str:
-    """Consulta el clima en tiempo real de cualquier ciudad usando wttr.in."""
+    """Consulta el clima en tiempo real forzando el sistema métrico (Celsius) con wttr.in."""
     try:
-        url = f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=3&lang=es"
+        url = f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=3&lang=es&m"
         headers = {"User-Agent": "curl"}
         response = requests.get(url, headers=headers, timeout=3)
         if response.status_code == 200:
@@ -51,29 +78,46 @@ def obtener_clima_actual(ciudad: str) -> str:
         pass
     return "No disponible en este momento."
 
-def generar_respuesta_con_flash(user_text: str) -> str:
+def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
-    # Contexto temporal global usando ZoneInfo (nativo de Python)
+    # Geolocalización autónoma
+    info_geo = obtener_ubicacion_por_ip(client_ip)
+    ciudad_actual = info_geo["ciudad"]
+    provincia_actual = info_geo["provincia"]
+    pais_actual = info_geo["pais"]
+    
     try:
-        ba_tz = ZoneInfo("America/Argentina/Buenos_Aires")
+        user_tz = ZoneInfo(info_geo["timezone"])
     except Exception:
-        ba_tz = ZoneInfo("UTC")
+        user_tz = ZoneInfo("UTC")
         
-    hora_actual = datetime.datetime.now(ba_tz).strftime('%H:%M (%d-%m-%Y)')
+    hora_actual = datetime.datetime.now(user_tz).strftime('%H:%M (%d-%m-%Y)')
 
-    # Detección inteligente si el usuario pregunta por clima de una ciudad específica
     contexto_extra = ""
     texto_lower = user_text.lower()
     
-    if "clima" in texto_lower or "tiempo" in texto_lower or "temperatura" in texto_lower:
+    # Detección inteligente si pregunta por el clima
+    if any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "hace frío", "hace calor"]):
+        ciudad_objetivo = None
         palabras = user_text.split()
+        
         for i, p in enumerate(palabras):
             if p.lower() in ["en", "de", "para"] and i + 1 < len(palabras):
-                ciudad_objetivo = palabras[i + 1].strip("?.,!")
-                clima_info = obtener_clima_actual(ciudad_objetivo)
-                contexto_extra += f"\n- Clima actual en {ciudad_objetivo}: {clima_info}"
+                ciudad_objetivo = " ".join(palabras[i+1:]).strip("?.,!")
+                break
+        
+        if not ciudad_objetivo and len(palabras) > 2:
+            ciudad_objetivo = palabras[-1].strip("?.,!")
+
+        # Si especifica ciudad la usa, sino usa la ubicación autónoma detectada (ej. Perú, Tokio, etc.)
+        if ciudad_objetivo and ciudad_objetivo not in ["clima", "tiempo", "temperatura", "el"]:
+            clima_info = obtener_clima_actual(ciudad_objetivo)
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
+        else:
+            clima_info = obtener_clima_actual(ciudad_actual)
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
@@ -85,9 +129,11 @@ def generar_respuesta_con_flash(user_text: str) -> str:
                 config={
                     "system_instruction": (
                         f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-                        f"INFORMACIÓN TEMPORAL: La hora local actual de referencia es {hora_actual}. "
+                        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
+                        f"La hora local exacta en su ubicación es {hora_actual}. "
                         f"{contexto_extra}"
-                        "\nREGLA CRÍTICA: Da respuestas extremadamente directas, conversacionales y breves para maximizar la velocidad. "
+                        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
+                        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
                         "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
                     )
                 }
@@ -160,7 +206,7 @@ def home():
 
         <div id="chat-container">
             <div class="message-wrapper jarvis">
-                <div class="bubble">Sistemas globales y meteorológicos enlazados. A su servicio, señor.</div>
+                <div class="bubble">Sistemas de geolocalización y telemetría autónoma enlazados. A su servicio, señor.</div>
             </div>
         </div>
 
@@ -310,10 +356,18 @@ def home():
     """
 
 @app.post("/procesar")
-def procesar(payload: PromptRequest):
+def procesar(payload: PromptRequest, request: Request):
     try:
         user_text = payload.text
-        respuesta_texto = generar_respuesta_con_flash(user_text)
+        
+        # Obtener la IP real del cliente que realiza la petición (incluso detrás de proxies como Render)
+        client_ip = request.headers.get("x-forwarded-for")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        else:
+            client_ip = request.client.host
+
+        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
 
         audio_b64 = ""
         if eleven_client:
