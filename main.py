@@ -21,7 +21,7 @@ import requests
 app = FastAPI()
 
 # ============================================================
-# Carga segura de keys de Gemini (sin cambios respecto al original)
+# Carga segura de keys de Gemini
 # ============================================================
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
 GEMINI_KEYS = []
@@ -44,11 +44,8 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
 
 # ============================================================
-# NUEVO: Configuración de seguridad para el agente y el centinela
+# Configuración de seguridad para el agente y el centinela
 # ============================================================
-# Estos secrets se definen como variables de entorno en Render.
-# NUNCA se hardcodean acá. Si no existen, el sistema arranca "cerrado"
-# (rechaza cualquier conexión de agente/centinela) en vez de "abierto".
 AGENT_SECRET = os.getenv("JARVIS_AGENT_SECRET")
 SENTINEL_SECRET = os.getenv("JARVIS_SENTINEL_SECRET")
 CLIENT_SECRET = os.getenv("JARVIS_CLIENT_SECRET")  # token para el iPhone 13 / frontend
@@ -69,7 +66,7 @@ def _tokens_match(a: Optional[str], b: Optional[str]) -> bool:
 
 
 # ============================================================
-# NUEVO: Estado del sistema (PC + centinela)
+# Estado del sistema (PC + centinela)
 # ============================================================
 class PCStatus(str, Enum):
     OFFLINE = "offline"    # sin conexión del agente, no sabemos si está prendida o no
@@ -81,9 +78,7 @@ class PCStatus(str, Enum):
 class SystemState:
     """
     Estado en memoria del sistema. Vive mientras el proceso de Render esté
-    arriba. Si Render reinicia el dyno, este estado se resetea a OFFLINE,
-    lo cual es el comportamiento correcto (asumimos lo peor hasta que el
-    agente se reconecte y confirme que está online).
+    arriba. Si Render reinicia el dyno, este estado se resetea a OFFLINE.
     """
     def __init__(self):
         self.pc_status: PCStatus = PCStatus.OFFLINE
@@ -127,11 +122,7 @@ class SystemState:
 
 state = SystemState()
 
-# Timeout: si el agente no manda heartbeat en este intervalo, lo consideramos
-# offline aunque el socket TCP siga técnicamente abierto (conexiones zombie).
 AGENT_HEARTBEAT_TIMEOUT_SECONDS = 60
-# Si llevamos más de esto en estado WAKING sin que el agente aparezca,
-# asumimos que el WoL falló.
 WAKE_TIMEOUT_SECONDS = 90
 
 
@@ -141,12 +132,12 @@ class PromptRequest(BaseModel):
 
 
 class PCCommandRequest(BaseModel):
-    action: str          # ej: "open_app", "shutdown", "wake"
+    action: str            # ej: "open_app", "shutdown", "wake"
     payload: dict = {}
 
 
 # ============================================================
-# Geolocalización y clima (sin cambios respecto al original)
+# Geolocalización y clima
 # ============================================================
 def obtener_ubicacion_por_ip(ip: str) -> dict:
     """Detecta de forma autónoma la ciudad, provincia y país basándose en la IP del cliente."""
@@ -229,7 +220,7 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-2.5-flash",
                 contents=user_text,
                 config={
                     "system_instruction": (
@@ -253,204 +244,8 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
 
 # ============================================================
-# Frontend (sin cambios respecto al original — se omite acá por espacio,
-# pegar tal cual el bloque HTML del main.py original)
+# Frontend y Endpoints REST
 # ============================================================
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTML_FRONTEND
-
-
-@app.post("/procesar")
-def procesar(payload: PromptRequest, request: Request):
-    try:
-        user_text = payload.text
-
-        client_ip = request.headers.get("x-forwarded-for")
-        if client_ip:
-            client_ip = client_ip.split(",")[0].strip()
-        else:
-            client_ip = request.client.host
-
-        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
-
-        audio_b64 = ""
-        if eleven_client:
-            try:
-                audio_stream = eleven_client.text_to_speech.convert(
-                    text=respuesta_texto[:250],
-                    voice_id="OqoIeNOqjjjkwABBwfFl",
-                    model_id="eleven_multilingual_v2",
-                    output_format="mp3_44100_128"
-                )
-                audio_bytes = b"".join(chunk for chunk in audio_stream)
-                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-                wav_io = io.BytesIO()
-                audio_wav.export(wav_io, format="wav")
-                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
-            except Exception as audio_err:
-                print(f"⚠️ Audio omitido por latencia: {audio_err}")
-
-        return {
-            "status": "ok",
-            "respuesta_texto": respuesta_texto,
-            "audio_base64": audio_b64
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================
-# NUEVO: Endpoint de estado (para debugging y para que el cliente
-# sepa si tiene sentido pedir un comando o hay que esperar)
-# ============================================================
-@app.get("/status")
-def get_status():
-    return state.snapshot()
-
-
-# ============================================================
-# NUEVO: WebSocket del agente (jarvis_pc_agent.py se conecta acá
-# cuando la PC está prendida)
-# ============================================================
-@app.websocket("/ws/agent")
-async def ws_agent(websocket: WebSocket):
-    # Autenticación ANTES de aceptar la conexión.
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not AGENT_SECRET or not _tokens_match(token, AGENT_SECRET):
-        await websocket.close(code=4401)  # código custom: no autorizado
-        return
-
-    await websocket.accept()
-    state.agent_connected(websocket)
-    print("✅ Agente de PC conectado.")
-
-    try:
-        while True:
-            # Esperamos mensajes del agente: heartbeats o resultados de comandos.
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            msg_type = msg.get("type")
-            if msg_type == "heartbeat":
-                state.last_agent_heartbeat = time.time()
-            elif msg_type == "command_result":
-                # Acá en el futuro reenviamos el resultado al cliente que
-                # pidió el comando (via un mapeo request_id -> client_ws).
-                print(f"📩 Resultado de comando: {msg.get('payload')}")
-            else:
-                print(f"⚠️ Mensaje desconocido del agente: {msg}")
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        state.agent_disconnected()
-        print("🔌 Agente de PC desconectado.")
-
-
-# ============================================================
-# NUEVO: WebSocket del centinela (iPhone 7 Plus, cuando exista)
-# ============================================================
-@app.websocket("/ws/sentinel")
-async def ws_sentinel(websocket: WebSocket):
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not SENTINEL_SECRET or not _tokens_match(token, SENTINEL_SECRET):
-        await websocket.close(code=4401)
-        return
-
-    await websocket.accept()
-    state.sentinel_connected(websocket)
-    print("✅ Centinela conectado.")
-
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            if msg.get("type") == "heartbeat":
-                state.last_sentinel_heartbeat = time.time()
-            elif msg.get("type") == "wol_sent":
-                print("📡 Centinela confirmó envío de paquete WoL.")
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        state.sentinel_disconnected()
-        print("🔌 Centinela desconectado.")
-
-
-# ============================================================
-# NUEVO: WebSocket del cliente (iPhone 13 / frontend)
-# ============================================================
-@app.websocket("/ws/client")
-async def ws_client(websocket: WebSocket):
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not CLIENT_SECRET or not _tokens_match(token, CLIENT_SECRET):
-        await websocket.close(code=4401)
-        return
-
-    await websocket.accept()
-
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                await websocket.send_json({"type": "error", "detail": "JSON inválido"})
-                continue
-
-            if msg.get("type") == "pc_command":
-                await handle_pc_command(websocket, msg.get("action"), msg.get("payload", {}))
-            else:
-                await websocket.send_json({"type": "error", "detail": f"Tipo de mensaje desconocido: {msg.get('type')}"})
-
-    except WebSocketDisconnect:
-        pass
-
-
-async def handle_pc_command(client_ws: WebSocket, action: str, payload: dict):
-    """
-    Punto central de decisión: ¿la PC está online? Reenviamos el comando.
-    ¿Está offline? Si la acción es "wake", disparamos WoL vía centinela.
-    Si no, avisamos que la PC está apagada.
-    """
-    if action == "wake":
-        if state.pc_status == PCStatus.ONLINE:
-            await client_ws.send_json({"type": "pc_status", "status": "already_online"})
-            return
-
-        if state.sentinel_ws is None:
-            await client_ws.send_json({
-                "type": "error",
-                "detail": "El centinela (iPhone 7) no está conectado. No se puede despertar la PC."
-            })
-            return
-
-        await state.sentinel_ws.send_json({"type": "send_wol"})
-        state.mark_waking()
-        await client_ws.send_json({"type": "pc_status", "status": "waking"})
-        return
-
-    # Cualquier otra acción requiere que el agente esté online.
-    if state.pc_status != PCStatus.ONLINE or state.agent_ws is None:
-        await client_ws.send_json({
-            "type": "error",
-            "detail": f"La PC no está online (estado actual: {state.pc_status.value}). Pedí 'wake' primero."
-        })
-        return
-
-    await state.agent_ws.send_json({"type": "command", "action": action, "payload": payload})
-    await client_ws.send_json({"type": "pc_status", "status": "command_sent"})
-
-
 HTML_FRONTEND = """
 <!DOCTYPE html>
 <html lang="es">
@@ -648,6 +443,177 @@ HTML_FRONTEND = """
 </body>
 </html>
 """
-    except Exception as e:
 
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML_FRONTEND
+
+
+@app.post("/procesar")
+def procesar(payload: PromptRequest, request: Request):
+    try:
+        user_text = payload.text
+
+        client_ip = request.headers.get("x-forwarded-for")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        else:
+            client_ip = request.client.host
+
+        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
+
+        audio_b64 = ""
+        if eleven_client:
+            try:
+                audio_stream = eleven_client.text_to_speech.convert(
+                    text=respuesta_texto[:250],
+                    voice_id="OqoIeNOqjjjkwABBwfFl",
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128"
+                )
+                audio_bytes = b"".join(chunk for chunk in audio_stream)
+                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+                wav_io = io.BytesIO()
+                audio_wav.export(wav_io, format="wav")
+                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
+            except Exception as audio_err:
+                print(f"⚠️ Audio omitido por latencia: {audio_err}")
+
+        return {
+            "status": "ok",
+            "respuesta_texto": respuesta_texto,
+            "audio_base64": audio_b64
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/status")
+def get_status():
+    return state.snapshot()
+
+
+# ============================================================
+# WebSockets (Agent, Sentinel, Client)
+# ============================================================
+@app.websocket("/ws/agent")
+async def ws_agent(websocket: WebSocket):
+    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not AGENT_SECRET or not _tokens_match(token, AGENT_SECRET):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    state.agent_connected(websocket)
+    print("✅ Agente de PC conectado.")
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type")
+            if msg_type == "heartbeat":
+                state.last_agent_heartbeat = time.time()
+            elif msg_type == "command_result":
+                print(f"📩 Resultado de comando: {msg.get('payload')}")
+            else:
+                print(f"⚠️ Mensaje desconocido del agente: {msg}")
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state.agent_disconnected()
+        print("🔌 Agente de PC desconectado.")
+
+
+@app.websocket("/ws/sentinel")
+async def ws_sentinel(websocket: WebSocket):
+    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not SENTINEL_SECRET or not _tokens_match(token, SENTINEL_SECRET):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    state.sentinel_connected(websocket)
+    print("✅ Centinela conectado.")
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            if msg.get("type") == "heartbeat":
+                state.last_sentinel_heartbeat = time.time()
+            elif msg.get("type") == "wol_sent":
+                print("📡 Centinela confirmó envío de paquete WoL.")
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state.sentinel_disconnected()
+        print("🔌 Centinela desconectado.")
+
+
+@app.websocket("/ws/client")
+async def ws_client(websocket: WebSocket):
+    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not CLIENT_SECRET or not _tokens_match(token, CLIENT_SECRET):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "detail": "JSON inválido"})
+                continue
+
+            if msg.get("type") == "pc_command":
+                await handle_pc_command(websocket, msg.get("action"), msg.get("payload", {}))
+            else:
+                await websocket.send_json({"type": "error", "detail": f"Tipo de mensaje desconocido: {msg.get('type')}"})
+
+    except WebSocketDisconnect:
+        pass
+
+
+async def handle_pc_command(client_ws: WebSocket, action: str, payload: dict):
+    if action == "wake":
+        if state.pc_status == PCStatus.ONLINE:
+            await client_ws.send_json({"type": "pc_status", "status": "already_online"})
+            return
+
+        if state.sentinel_ws is None:
+            await client_ws.send_json({
+                "type": "error",
+                "detail": "El centinela (iPhone 7) no está conectado. No se puede despertar la PC."
+            })
+            return
+
+        await state.sentinel_ws.send_json({"type": "send_wol"})
+        state.mark_waking()
+        await client_ws.send_json({"type": "pc_status", "status": "waking"})
+        return
+
+    if state.pc_status != PCStatus.ONLINE or state.agent_ws is None:
+        await client_ws.send_json({
+            "type": "error",
+            "detail": f"La PC no está online (estado actual: {state.pc_status.value}). Pedí 'wake' primero."
+        })
+        return
+
+    await state.agent_ws.send_json({"type": "command", "action": action, "payload": payload})
+    await client_ws.send_json({"type": "pc_status", "status": "command_sent"})
