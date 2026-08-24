@@ -18,6 +18,8 @@ from google.genai import types
 
 app = FastAPI(title="J.A.R.V.I.S. Cloud Brain")
 
+MODEL_NAME = "gemini-3.6-flash"
+
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE API KEYS DE GEMINI (ROBUSTA Y MULTI-FUENTE)
 # ---------------------------------------------------------
@@ -154,11 +156,12 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
         try:
             client = genai.Client(api_key=key_limpia)
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=user_text,
+            # Uso recomendado vía Chat
+            chat = client.chats.create(
+                model=MODEL_NAME,
                 config=config
             )
+            response = chat.send_message(user_text)
             if response and response.text:
                 return response.text
         except Exception as e:
