@@ -180,7 +180,7 @@ def obtener_clima_actual(ciudad: str) -> str:
 
 def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     if not GEMINI_KEYS:
-        raise ValueError("No se encontraron API Keys configuradas en GEMINI_API_KEYS ni GEMINI_API_KEY.")
+        raise ValueError("No hay API keys de Gemini disponibles en la variable GEMINI_API_KEYS o GEMINI_API_KEY.")
 
     info_geo = obtener_ubicacion_por_ip(client_ip)
     ciudad_actual = info_geo["ciudad"]
@@ -211,35 +211,38 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
         if ciudad_objetivo and ciudad_objetivo not in ["clima", "tiempo", "temperatura", "el"]:
             clima_info = obtener_clima_actual(ciudad_objetivo)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO °C): Clima en {ciudad_objetivo}: {clima_info}"
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
         else:
             clima_info = obtener_clima_actual(ciudad_actual)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO °C): Clima actual ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
+            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
 
-    system_instruction = (
-        f"Eres J.A.R.V.I.S., un asistente de IA avanzado, formal y eficiente. "
-        f"Ubicación del usuario: {ciudad_actual}, {provincia_actual}, {pais_actual}. "
-        f"Hora local: {hora_actual}. {contexto_extra}\n"
-        "REGLA 1: Respuestas directas, concisas y conversacionales.\n"
-        "REGLA 2: Sistema métrico (°C)."
+    system_instruction_text = (
+        f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
+        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
+        f"La hora local exacta en su ubicación es {hora_actual}. "
+        f"{contexto_extra}"
+        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
+        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
+        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
+    )
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction_text,
+        temperature=0.7
     )
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_text,
-                config={
-                    "system_instruction": system_instruction,
-                    "temperature": 0.7,
-                }
+            chat = client.chats.create(
+                model="gemini-3.6-flash",
+                config=config
             )
+            response = chat.send_message(user_text)
             if response and response.text:
                 return response.text
         except Exception as e:
-            print(f"⚠️ Error con la API Key (...{api_key[-5:] if len(api_key)>5 else '***'}): {e}")
             ultimo_error = e
             continue
 
@@ -490,6 +493,8 @@ def home():
     return HTML_FRONTEND
 
 
+import traceback
+
 @app.post("/procesar")
 def procesar(payload: PromptRequest, request: Request):
     try:
@@ -527,6 +532,8 @@ def procesar(payload: PromptRequest, request: Request):
             "audio_base64": audio_b64
         }
     except Exception as e:
+        print("❌ ERROR EN /procesar:")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
