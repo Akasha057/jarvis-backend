@@ -217,7 +217,6 @@ async def procesar(payload: PromptRequest, request: Request):
                 )
                 audio_bytes = b"".join(chunk for chunk in audio_stream)
                 
-                # Conversión a formato WAV 44.1kHz Monocanal
                 audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
                 audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
                 wav_io = io.BytesIO()
@@ -278,12 +277,8 @@ async def websocket_sentinel(websocket: WebSocket):
         state.sentinel_connected = False
 
 # ---------------------------------------------------------
-# FRONTEND HTML CON BOTÓN DE REPRODUCCIÓN Y DESCARGA WAV
+# FRONTEND HTML
 # ---------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTML_FRONTEND
-
 HTML_FRONTEND = """
 <!DOCTYPE html>
 <html lang="es">
@@ -471,7 +466,6 @@ HTML_FRONTEND = """
                 const actionsContainer = document.createElement('div');
                 actionsContainer.style.marginTop = '8px';
 
-                // Botón Exportar PDF
                 const pdfBtn = document.createElement('button');
                 pdfBtn.className = 'action-link-btn';
                 pdfBtn.innerHTML = '📄 PDF';
@@ -483,7 +477,6 @@ HTML_FRONTEND = """
                 };
                 actionsContainer.appendChild(pdfBtn);
 
-                // Botones de Audio (Reproducir y Descargar)
                 if (audioSrc) {
                     const playBtn = document.createElement('button');
                     playBtn.className = 'action-link-btn';
@@ -508,3 +501,8 @@ HTML_FRONTEND = """
     </script>
 </body>
 </html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML_FRONTEND
