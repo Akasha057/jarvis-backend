@@ -1,21 +1,18 @@
 import base64
-import datetime
 import io
 import json
 import os
-import urllib.parse
+import datetime
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from pydub import AudioSegment
 from google import genai
 from elevenlabs import ElevenLabs
 import requests
 
 app = FastAPI()
 
-# Carga segura de keys de Gemini
+# Carga segura de keys
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
 GEMINI_KEYS = []
 if raw_keys:
@@ -36,14 +33,8 @@ if single_key and single_key.strip() not in GEMINI_KEYS:
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
 
-class PromptRequest(BaseModel):
-    text: str
-    client_ip: str = None
-
 def obtener_ubicacion_por_ip(ip: str) -> dict:
-    """Detecta de forma autónoma la ciudad, provincia y país basándose en la IP del cliente."""
     try:
-        # Si es localhost o IP privada, intentamos consultar la IP pública actual de la red
         url = f"https://ipapi.co/{ip}/json/" if ip and ip not in ["127.0.0.1", "localhost", "::1"] else "https://ipapi.co/json/"
         headers = {"User-Agent": "curl"}
         response = requests.get(url, headers=headers, timeout=3)
@@ -57,8 +48,6 @@ def obtener_ubicacion_por_ip(ip: str) -> dict:
             }
     except Exception:
         pass
-    
-    # Valores de respaldo por defecto si falla la red de geolocalización
     return {
         "ciudad": "Buenos Aires",
         "provincia": "Buenos Aires",
@@ -66,27 +55,12 @@ def obtener_ubicacion_por_ip(ip: str) -> dict:
         "timezone": "America/Argentina/Buenos_Aires"
     }
 
-def obtener_clima_actual(ciudad: str) -> str:
-    """Consulta el clima en tiempo real forzando el sistema métrico (Celsius) con wttr.in."""
-    try:
-        url = f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=3&lang=es&m"
-        headers = {"User-Agent": "curl"}
-        response = requests.get(url, headers=headers, timeout=3)
-        if response.status_code == 200:
-            return response.text.strip()
-    except Exception:
-        pass
-    return "No disponible en este momento."
-
-def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
+def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_ip: str = "127.0.0.1") -> tuple[str, str]:
     if not GEMINI_KEYS:
         raise ValueError("No hay API keys de Gemini disponibles.")
 
-    # Geolocalización autónoma
     info_geo = obtener_ubicacion_por_ip(client_ip)
-    ciudad_actual = info_geo["ciudad"]
-    provincia_actual = info_geo["provincia"]
-    pais_actual = info_geo["pais"]
+    ciudad_actual, provincia_actual, pais_actual = info_geo["ciudad"], info_geo["provincia"], info_geo["pais"]
     
     try:
         user_tz = ZoneInfo(info_geo["timezone"])
@@ -95,302 +69,81 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
         
     hora_actual = datetime.datetime.now(user_tz).strftime('%H:%M (%d-%m-%Y)')
 
-    contexto_extra = ""
-    texto_lower = user_text.lower()
-    
-    # Detección inteligente si pregunta por el clima
-    if any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "hace frío", "hace calor"]):
-        ciudad_objetivo = None
-        palabras = user_text.split()
-        
-        for i, p in enumerate(palabras):
-            if p.lower() in ["en", "de", "para"] and i + 1 < len(palabras):
-                ciudad_objetivo = " ".join(palabras[i+1:]).strip("?.,!")
-                break
-        
-        if not ciudad_objetivo and len(palabras) > 2:
-            ciudad_objetivo = palabras[-1].strip("?.,!")
-
-        # Si especifica ciudad la usa, sino usa la ubicación autónoma detectada (ej. Perú, Tokio, etc.)
-        if ciudad_objetivo and ciudad_objetivo not in ["clima", "tiempo", "temperatura", "el"]:
-            clima_info = obtener_clima_actual(ciudad_objetivo)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
-        else:
-            clima_info = obtener_clima_actual(ciudad_actual)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
+    contents = []
+    if image_bytes:
+        contents.append({
+            "mime_type": "image/png",
+            "data": image_bytes
+        })
+    contents.append(user_text)
 
     ultimo_error = None
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=user_text,
+                model="gemini-2.5-flash",  # O gemini-3.6-flash según tu preferencia
+                contents=contents,
                 config={
                     "system_instruction": (
                         f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-                        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
-                        f"La hora local exacta en su ubicación es {hora_actual}. "
-                        f"{contexto_extra}"
-                        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
-                        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
-                        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
+                        f"INFORMACIÓN EN TIEMPO REAL: El usuario se encuentra en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
+                        f"La hora local exacta es {hora_actual}. "
+                        "REGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves (ideales para ser leídas por voz). "
+                        "REGLA CRÍTICA 2: Utiliza SIEMPRE el sistema métrico (grados Celsius °C). "
+                        "Si el usuario te envía una captura de pantalla, analízala con precisión para guiarlo paso a paso en su PC."
                     )
                 }
             )
             if response and response.text:
-                return response.text
+                respuesta_texto = response.text
+                
+                # Generación de audio con ElevenLabs (o motor de voz)
+                audio_b64 = ""
+                if eleven_client:
+                    try:
+                        from pydub import AudioSegment
+                        audio_stream = eleven_client.text_to_speech.convert(
+                            text=respuesta_texto[:300], 
+                            voice_id="OqoIeNOqjjjkwABBwfFl",
+                            model_id="eleven_multilingual_v2",
+                            output_format="mp3_44100_128"
+                        )
+                        audio_bytes = b"".join(chunk for chunk in audio_stream)
+                        audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                        audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+                        wav_io = io.BytesIO()
+                        audio_wav.export(wav_io, format="wav")
+                        audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
+                    except Exception as audio_err:
+                        print(f"⚠️ Error generando audio: {audio_err}")
+
+                return respuesta_texto, audio_b64
         except Exception as e:
             ultimo_error = e
             continue
 
-    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+    raise Exception(f"Todas las API keys fallaron. Error: {ultimo_error}")
 
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return """
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>J.A.R.V.I.S. - Omni Chat</title>
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-        
-        <style>
-            :root {
-                --bg-main: #0b131a;
-                --bg-panel: #111b21;
-                --bg-bubble-user: #005c4b;
-                --bg-bubble-jarvis: #202c33;
-                --text-main: #e9edef;
-                --text-muted: #8696a0;
-                --accent: #00a884;
-                --accent-hover: #008f72;
-            }
-            * { box-sizing: border-box; }
-            body { background: var(--bg-main); color: var(--text-main); font-family: 'Segoe UI', Roboto, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-            header { padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-panel); border-bottom: 1px solid #222d34; }
-            #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; max-width: 900px; width: 100%; margin: 0 auto; }
-            .message-wrapper { display: flex; flex-direction: column; max-width: 80%; }
-            .message-wrapper.user { align-self: flex-end; }
-            .message-wrapper.jarvis { align-self: flex-start; }
-            .bubble { padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
-            .user .bubble { background: var(--bg-bubble-user); color: #fff; border-top-right-radius: 0; }
-            .jarvis .bubble { background: var(--bg-bubble-jarvis); color: var(--text-main); border-top-left-radius: 0; border: 1px solid #2a3942; }
-            pre { background: #0b141a !important; padding: 12px; border-radius: 6px; overflow-x: auto; border: 1px solid #222d34; }
-            code { font-family: 'Courier New', Courier, monospace; }
-            footer { padding: 12px 20px; background: var(--bg-panel); display: flex; align-items: center; justify-content: center; gap: 12px; border-top: 1px solid #222d34; }
-            .input-box-container { background: #2a3942; border-radius: 8px; padding: 6px 12px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 900px; }
-            textarea { flex: 1; background: none; border: none; color: white; font-size: 14px; outline: none; resize: none; max-height: 100px; font-family: inherit; }
-            textarea::placeholder { color: var(--text-muted); }
-            .action-buttons { display: flex; align-items: center; gap: 8px; }
-            .icon-btn { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-            .icon-btn:hover { color: var(--text-main); }
-            .icon-btn.active { color: #d9534f; }
-            .send-btn { background: var(--accent); color: #111b21; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; }
-            .send-btn:hover { background: var(--accent-hover); }
-            #status { font-size: 12px; color: var(--text-muted); }
-            .action-link-btn { margin-top: 8px; background: #182229; border: 1px solid var(--accent); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 6px; }
-            .action-link-btn:hover { background: var(--accent); color: #111b21; }
-        </style>
-    </head>
-    <body>
-        <header>
-            <span style="font-weight: bold; color: var(--accent); letter-spacing: 1px;">J.A.R.V.I.S.</span>
-            <span id="status">Inactivo</span>
-        </header>
-
-        <div id="chat-container">
-            <div class="message-wrapper jarvis">
-                <div class="bubble">Sistemas de geolocalización y telemetría autónoma enlazados. A su servicio, señor.</div>
-            </div>
-        </div>
-
-        <footer>
-            <div class="input-box-container">
-                <textarea id="user-input" rows="1" placeholder="Escribe un mensaje a J.A.R.V.I.S..." oninput="autoExpand(this)"></textarea>
-                <div class="action-buttons">
-                    <button class="icon-btn" id="mic-btn" onclick="toggleVoz()" title="Modo Voz Continua">🎙️</button>
-                    <button class="send-btn" onclick="enviarMensaje()">Enviar</button>
-                </div>
-            </div>
-        </footer>
-
-        <script>
-            const chatContainer = document.getElementById('chat-container');
-            const statusSpan = document.getElementById('status');
-            const micBtn = document.getElementById('mic-btn');
-            let isConversing = false;
-            let recognition = null;
-            let currentAudio = null;
-
-            function autoExpand(textarea) {
-                textarea.style.height = 'auto';
-                textarea.style.height = textarea.scrollHeight + 'px';
-            }
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (SpeechRecognition) {
-                recognition = new SpeechRecognition();
-                recognition.lang = 'es-ES';
-                recognition.interimResults = false;
-                recognition.continuous = false;
-
-                recognition.onstart = () => { statusSpan.innerText = "Escuchando..."; micBtn.classList.add('active'); };
-                recognition.onresult = async (event) => { await enviarTexto(event.results[0][0].transcript); };
-                recognition.onerror = () => { if (isConversing) setTimeout(() => { try { recognition.start(); } catch(e){} }, 1000); };
-                recognition.onend = () => {
-                    if (isConversing && statusSpan.innerText === "Escuchando...") {
-                        try { recognition.start(); } catch(e){}
-                    } else if (!isConversing) { micBtn.classList.remove('active'); }
-                };
-            }
-
-            function interrumpirJarvis() {
-                if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-            }
-
-            function toggleVoz() {
-                if (!recognition) return;
-                isConversing = !isConversing;
-                if (isConversing) { interrumpirJarvis(); try { recognition.start(); } catch(e){} }
-                else { micBtn.classList.remove('active'); statusSpan.innerText = "Inactivo"; try { recognition.stop(); } catch(e){} }
-            }
-
-            async function enviarMensaje() {
-                const textarea = document.getElementById('user-input');
-                const text = textarea.value.trim();
-                if (!text) return;
-                textarea.value = "";
-                textarea.style.height = 'auto';
-                await enviarTexto(text);
-            }
-
-            document.getElementById('user-input').onkeydown = (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviarMensaje(); }
-            };
-
-            async function enviarTexto(text) {
-                interrumpirJarvis();
-                if (isConversing) { try { recognition.stop(); } catch(e){} }
-
-                appendMessageUI(text, 'user');
-                statusSpan.innerText = "Procesando...";
-
-                try {
-                    const response = await fetch('/procesar', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ text: text })
-                    });
-                    
-                    if (!response.ok) throw new Error("Error en el servidor");
-                    const data = await response.json();
-
-                    if (data.status === "ok") {
-                        const audioSrc = data.audio_base64 ? "data:audio/wav;base64," + data.audio_base64 : null;
-                        appendMessageUI(data.respuesta_texto, 'jarvis', audioSrc, `jarvis_${Date.now()}.wav`);
-
-                        if (audioSrc) {
-                            currentAudio = new Audio(audioSrc);
-                            statusSpan.innerText = "J.A.R.V.I.S. hablando...";
-                            currentAudio.play().catch(e => console.log(e));
-                            currentAudio.onended = () => {
-                                currentAudio = null;
-                                if (isConversing) try { recognition.start(); } catch(e){}
-                                else statusSpan.innerText = "Inactivo";
-                            };
-                        } else {
-                            statusSpan.innerText = "Inactivo";
-                            if (isConversing) try { recognition.start(); } catch(e){}
-                        }
-                    }
-                } catch (err) {
-                    statusSpan.innerText = "Error";
-                    appendMessageUI("⚠️ Error de conexión.", 'jarvis');
-                    if (isConversing) setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
-                }
-            }
-
-            function appendMessageUI(text, sender, audioSrc = null, fileName = null) {
-                const wrapper = document.createElement('div');
-                wrapper.className = `message-wrapper ${sender}`;
-                const bubble = document.createElement('div');
-                bubble.className = 'bubble';
-
-                if (sender === 'user') {
-                    bubble.innerText = text;
-                } else {
-                    bubble.innerHTML = marked.parse(text);
-                    const pdfBtn = document.createElement('button');
-                    pdfBtn.className = 'action-link-btn';
-                    pdfBtn.innerHTML = '📄 PDF';
-                    pdfBtn.onclick = () => {
-                        const { jsPDF } = window.jspdf;
-                        const doc = new jsPDF();
-                        doc.text(text.replace(/<[^>]*>?/gm, ''), 15, 20);
-                        doc.save(`jarvis_${Date.now()}.pdf`);
-                    };
-                    bubble.appendChild(pdfBtn);
-
-                    if (audioSrc) {
-                        const wavBtn = document.createElement('a');
-                        wavBtn.href = audioSrc;
-                        wavBtn.download = fileName;
-                        wavBtn.className = 'action-link-btn';
-                        wavBtn.innerText = '📥 WAV';
-                        bubble.appendChild(wavBtn);
-                    }
-                }
-                wrapper.appendChild(bubble);
-                chatContainer.appendChild(wrapper);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-        </script>
-    </body>
-    </html>
-    """
-
-@app.post("/procesar")
-def procesar(payload: PromptRequest, request: Request):
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    client_ip = websocket.client.host
     try:
-        user_text = payload.text
-        
-        # Obtener la IP real del cliente que realiza la petición (incluso detrás de proxies como Render)
-        client_ip = request.headers.get("x-forwarded-for")
-        if client_ip:
-            client_ip = client_ip.split(",")[0].strip()
-        else:
-            client_ip = request.client.host
-
-        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
-
-        audio_b64 = ""
-        if eleven_client:
-            try:
-                audio_stream = eleven_client.text_to_speech.convert(
-                    text=respuesta_texto[:250], 
-                    voice_id="OqoIeNOqjjjkwABBwfFl",
-                    model_id="eleven_multilingual_v2",
-                    output_format="mp3_44100_128"
-                )
-                audio_bytes = b"".join(chunk for chunk in audio_stream)
-                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-                wav_io = io.BytesIO()
-                audio_wav.export(wav_io, format="wav")
-                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
-            except Exception as audio_err:
-                print(f"⚠️ Audio omitido por latencia: {audio_err}")
-
-        return {
-            "status": "ok",
-            "respuesta_texto": respuesta_texto,
-            "audio_base64": audio_b64
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            user_text = payload.get("text", "")
+            image_b64 = payload.get("image_base64", None)
+            
+            image_bytes = base64.b64decode(image_b64) if image_b64 else None
+            
+            respuesta_texto, audio_b64 = generar_respuesta_gemini(user_text, image_bytes, client_ip)
+            
+            await websocket.send_text(json.dumps({
+                "status": "ok",
+                "respuesta_texto": respuesta_texto,
+                "audio_base64": audio_b64
+            }))
+    except WebSocketDisconnect:
+        print("Cliente desconectado del WebSocket.")
