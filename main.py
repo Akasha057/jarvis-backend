@@ -79,7 +79,7 @@ def obtener_clima_actual(ciudad: str) -> str:
 
 def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     if not GEMINI_KEYS:
-        raise ValueError("No hay API keys de Gemini disponibles.")
+        raise ValueError("No hay API keys de Gemini configuradas en GEMINI_API_KEYS o GEMINI_API_KEY.")
 
     info_geo = obtener_ubicacion_por_ip(client_ip)
     ciudad_actual = info_geo["ciudad"]
@@ -130,15 +130,18 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
-            chat = client.chats.create(model="gemini-2.5-flash", config=config)
-            response = chat.send_message(user_text)
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=user_text,
+                config=config
+            )
             if response and response.text:
                 return response.text
         except Exception as e:
             ultimo_error = e
             continue
 
-    raise Exception(f"Todas las API keys de Gemini fallaron. Error: {ultimo_error}")
+    raise Exception(f"Fallo en llamadas a Gemini. Último error registrado: {ultimo_error}")
 
 # ---------------------------------------------------------
 # ENDPOINTS Y RUTAS
