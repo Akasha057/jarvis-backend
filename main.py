@@ -1,186 +1,85 @@
-import base64
-import datetime
+import os
 import io
 import json
-import os
-import secrets
-import time
-import urllib.parse
-from enum import Enum
-from typing import Optional
-from zoneinfo import ZoneInfo
+import base64
+import datetime
 import traceback
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from zoneinfo import ZoneInfo
+from typing import Dict, Any
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Header, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import requests
 from pydub import AudioSegment
+from elevenlabs.client import ElevenLabs
 from google import genai
 from google.genai import types
-from elevenlabs import ElevenLabs
-import requests
 
-app = FastAPI()
+app = FastAPI(title="J.A.R.V.I.S. Cloud Brain")
 
-# ============================================================
-# Carga segura de keys de Gemini
-# ============================================================
-raw_keys = os.getenv("GEMINI_API_KEYS", "")
-GEMINI_KEYS = []
-if raw_keys:
-    if raw_keys.strip().startswith("["):
-        try:
-            parsed = json.loads(raw_keys)
-            if isinstance(parsed, list):
-                GEMINI_KEYS = [str(k).strip() for k in parsed if k]
-        except Exception:
-            GEMINI_KEYS = [raw_keys.strip()]
-    else:
-        GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+# ---------------------------------------------------------
+# CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# ---------------------------------------------------------
+GEMINI_KEYS_RAW = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY", "")
+GEMINI_KEYS = [k.strip() for k in GEMINI_KEYS_RAW.split(",") if k.strip()]
 
-single_key = os.getenv("GEMINI_API_KEY")
-if single_key and single_key.strip() not in GEMINI_KEYS:
-    GEMINI_KEYS.insert(0, single_key.strip())
+ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY", "")
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
 
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
+# Secrets de seguridad (Configúralos en el panel de Render)
+JARVIS_AGENT_SECRET = os.environ.get("JARVIS_AGENT_SECRET", "default_agent_secret_change_me")
+JARVIS_SENTINEL_SECRET = os.environ.get("JARVIS_SENTINEL_SECRET", "default_sentinel_secret_change_me")
 
-# ============================================================
-# Configuración de seguridad para el agente y el centinela
-# ============================================================
-AGENT_SECRET = os.getenv("JARVIS_AGENT_SECRET")
-SENTINEL_SECRET = os.getenv("JARVIS_SENTINEL_SECRET")
-CLIENT_SECRET = os.getenv("JARVIS_CLIENT_SECRET")  # token para el iPhone 13 / frontend
+eleven_client = ElevenLabs(api_key=ELEVEN_API_KEY) if ELEVEN_API_KEY else None
 
-if not AGENT_SECRET:
-    print("⚠️ JARVIS_AGENT_SECRET no configurado. El endpoint /ws/agent rechazará todas las conexiones.")
-if not SENTINEL_SECRET:
-    print("⚠️ JARVIS_SENTINEL_SECRET no configurado. El endpoint /ws/sentinel rechazará todas las conexiones.")
-if not CLIENT_SECRET:
-    print("⚠️ JARVIS_CLIENT_SECRET no configurado. El endpoint /ws/client rechazará todas las conexiones.")
-
-
-def _tokens_match(a: Optional[str], b: Optional[str]) -> bool:
-    """Comparación de tokens resistente a timing attacks."""
-    if not a or not b:
-        return False
-    return secrets.compare_digest(a, b)
-
-
-# ============================================================
-# Estado del sistema (PC + centinela)
-# ============================================================
-class PCStatus(str, Enum):
-    OFFLINE = "offline"    # sin conexión del agente, no sabemos si está prendida o no
-    WAKING = "waking"      # se disparó WoL, esperando que el agente se conecte
-    ONLINE = "online"      # el agente está conectado y responde
-    BUSY = "busy"          # el agente está conectado pero ejecutando un comando largo
-
-
-class SystemState:
-    """
-    Estado en memoria del sistema. Vive mientras el proceso de Render esté
-    arriba. Si Render reinicia el dyno, este estado se resetea a OFFLINE.
-    """
+# ---------------------------------------------------------
+# ESTADO GLOBAL Y ADMINISTRADOR DE WEBSOCKETS
+# ---------------------------------------------------------
+class EcosistemaState:
     def __init__(self):
-        self.pc_status: PCStatus = PCStatus.OFFLINE
-        self.agent_ws: Optional[WebSocket] = None
-        self.sentinel_ws: Optional[WebSocket] = None
-        self.last_agent_heartbeat: Optional[float] = None
-        self.last_sentinel_heartbeat: Optional[float] = None
-        self.waking_since: Optional[float] = None
+        self.pc_status = "offline"  # "offline", "online", "waking"
+        self.pc_last_seen = None
+        self.sentinel_connected = False
+        self.pc_agent_ws: WebSocket = None
+        self.sentinel_ws: WebSocket = None
 
-    def agent_connected(self, ws: WebSocket):
-        self.agent_ws = ws
-        self.pc_status = PCStatus.ONLINE
-        self.last_agent_heartbeat = time.time()
-        self.waking_since = None
+state = EcosistemaState()
 
-    def agent_disconnected(self):
-        self.agent_ws = None
-        self.pc_status = PCStatus.OFFLINE
-
-    def sentinel_connected(self, ws: WebSocket):
-        self.sentinel_ws = ws
-        self.last_sentinel_heartbeat = time.time()
-
-    def sentinel_disconnected(self):
-        self.sentinel_ws = None
-
-    def mark_waking(self):
-        self.pc_status = PCStatus.WAKING
-        self.waking_since = time.time()
-
-    def snapshot(self) -> dict:
-        return {
-            "pc_status": self.pc_status.value,
-            "agent_connected": self.agent_ws is not None,
-            "sentinel_connected": self.sentinel_ws is not None,
-            "last_agent_heartbeat": self.last_agent_heartbeat,
-            "last_sentinel_heartbeat": self.last_sentinel_heartbeat,
-            "waking_since": self.waking_since,
-        }
-
-
-state = SystemState()
-
-AGENT_HEARTBEAT_TIMEOUT_SECONDS = 60
-WAKE_TIMEOUT_SECONDS = 90
-
-
-class PromptRequest(BaseModel):
-    text: str
-    client_ip: str = None
-
-
-class PCCommandRequest(BaseModel):
-    action: str            # ej: "open_app", "shutdown", "wake"
-    payload: dict = {}
-
-
-# ============================================================
-# Geolocalización y clima
-# ============================================================
+# ---------------------------------------------------------
+# HELPER FUNCTIONS (GEO, WEATHER, GEMINI)
+# ---------------------------------------------------------
 def obtener_ubicacion_por_ip(ip: str) -> dict:
-    """Detecta de forma autónoma la ciudad, provincia y país basándose en la IP del cliente."""
     try:
-        url = f"https://ipapi.co/{ip}/json/" if ip and ip not in ["127.0.0.1", "localhost", "::1"] else "https://ipapi.co/json/"
-        headers = {"User-Agent": "curl"}
-        response = requests.get(url, headers=headers, timeout=3)
-        if response.status_code == 200:
-            data = response.json()
+        res = requests.get(f"http://ip-api.com/json/{ip}?lang=es", timeout=3).json()
+        if res.get("status") == "success":
             return {
-                "ciudad": data.get("city", "Buenos Aires"),
-                "provincia": data.get("region", "Buenos Aires"),
-                "pais": data.get("country_name", "Argentina"),
-                "timezone": data.get("timezone", "America/Argentina/Buenos_Aires")
+                "ciudad": res.get("city", "Desconocida"),
+                "provincia": res.get("regionName", "Desconocida"),
+                "pais": res.get("country", "Desconocida"),
+                "timezone": res.get("timezone", "UTC")
             }
     except Exception:
         pass
-
-    return {
-        "ciudad": "Buenos Aires",
-        "provincia": "Buenos Aires",
-        "pais": "Argentina",
-        "timezone": "America/Argentina/Buenos_Aires"
-    }
-
+    return {"ciudad": "Buenos Aires", "provincia": "Buenos Aires", "pais": "Argentina", "timezone": "America/Argentina/Buenos_Aires"}
 
 def obtener_clima_actual(ciudad: str) -> str:
-    """Consulta el clima en tiempo real forzando el sistema métrico (Celsius) con wttr.in."""
+    if not WEATHER_API_KEY:
+        return "Clave de WeatherAPI no configurada."
     try:
-        url = f"https://wttr.in/{urllib.parse.quote(ciudad)}?format=3&lang=es&m"
-        headers = {"User-Agent": "curl"}
-        response = requests.get(url, headers=headers, timeout=3)
-        if response.status_code == 200:
-            return response.text.strip()
+        url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q={ciudad}&lang=es"
+        res = requests.get(url, timeout=3).json()
+        if "current" in res:
+            temp = res["current"]["temp_c"]
+            cond = res["current"]["condition"]["text"]
+            return f"{temp}°C, {cond}"
     except Exception:
         pass
-    return "No disponible en este momento."
-
+    return "No se pudo obtener el clima."
 
 def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     if not GEMINI_KEYS:
-        raise ValueError("No hay API keys de Gemini disponibles en la variable GEMINI_API_KEYS o GEMINI_API_KEY.")
+        raise ValueError("No hay API keys de Gemini disponibles.")
 
     info_geo = obtener_ubicacion_por_ip(client_ip)
     ciudad_actual = info_geo["ciudad"]
@@ -194,36 +93,32 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
 
     hora_actual = datetime.datetime.now(user_tz).strftime('%H:%M (%d-%m-%Y)')
 
-    contexto_extra = ""
+    contexto_extra = f"\n- ESTADO DEL HARDWARE: PC Local: {state.pc_status.upper()} | Centinela WoL: {'CONECTADO' if state.sentinel_connected else 'DESCONECTADO'}"
     texto_lower = user_text.lower()
 
     if any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "hace frío", "hace calor"]):
         ciudad_objetivo = None
         palabras = user_text.split()
-
         for i, p in enumerate(palabras):
             if p.lower() in ["en", "de", "para"] and i + 1 < len(palabras):
                 ciudad_objetivo = " ".join(palabras[i+1:]).strip("?.,!")
                 break
-
         if not ciudad_objetivo and len(palabras) > 2:
             ciudad_objetivo = palabras[-1].strip("?.,!")
 
         if ciudad_objetivo and ciudad_objetivo not in ["clima", "tiempo", "temperatura", "el"]:
             clima_info = obtener_clima_actual(ciudad_objetivo)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
+            contexto_extra += f"\n- DATOS METEOROLÓGICOS (CELSIUS °C): Clima en {ciudad_objetivo}: {clima_info}"
         else:
             clima_info = obtener_clima_actual(ciudad_actual)
-            contexto_extra = f"\n- DATOS METEOROLÓGICOS (OBLIGATORIO GRADOS CELSIUS °C): Clima en la ubicación actual del usuario ({ciudad_actual}, {provincia_actual}, {pais_actual}): {clima_info}"
+            contexto_extra += f"\n- DATOS METEOROLÓGICOS (CELSIUS °C): Clima actual ({ciudad_actual}): {clima_info}"
 
     system_instruction_text = (
         f"Eres J.A.R.V.I.S., un asistente de inteligencia artificial avanzado, formal y eficiente. "
-        f"INFORMACIÓN AUTÓNOMA EN TIEMPO REAL: El usuario se encuentra actualmente localizado en {ciudad_actual}, {provincia_actual}, {pais_actual}. "
-        f"La hora local exacta en su ubicación es {hora_actual}. "
-        f"{contexto_extra}"
-        "\nREGLA CRÍTICA 1: Da respuestas extremadamente directas, conversacionales y breves. "
-        "REGLA CRÍTICA 2: Utiliza SIEMPRE y exclusivamente el sistema métrico (grados Celsius °C). NUNCA menciones Fahrenheit. "
-        "NUNCA incluyas scripts de programación ni explicaciones de código a menos que se te pida explícitamente."
+        f"Ubicación del usuario: {ciudad_actual}, {provincia_actual}, {pais_actual}. Hora local: {hora_actual}. "
+        f"{contexto_extra}\n"
+        "REGLA 1: Da respuestas extremadamente directas, conversacionales y breves. "
+        "REGLA 2: Usa siempre el sistema métrico (°C)."
     )
 
     config = types.GenerateContentConfig(
@@ -235,10 +130,7 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
     for api_key in GEMINI_KEYS:
         try:
             client = genai.Client(api_key=api_key)
-            chat = client.chats.create(
-                model="gemini-3.6-flash",
-                config=config
-            )
+            chat = client.chats.create(model="gemini-2.5-flash", config=config)
             response = chat.send_message(user_text)
             if response and response.text:
                 return response.text
@@ -246,20 +138,47 @@ def generar_respuesta_con_flash(user_text: str, client_ip: str) -> str:
             ultimo_error = e
             continue
 
-    raise Exception(f"Todas las API keys de Gemini fallaron. Último error: {ultimo_error}")
+    raise Exception(f"Todas las API keys de Gemini fallaron. Error: {ultimo_error}")
 
+# ---------------------------------------------------------
+# ENDPOINTS Y RUTAS
+# ---------------------------------------------------------
+class PromptRequest(BaseModel):
+    text: str
+
+@app.get("/status")
+def get_status():
+    return {
+        "pc_status": state.pc_status,
+        "pc_last_seen": state.pc_last_seen,
+        "sentinel_connected": state.sentinel_connected
+    }
 
 @app.post("/procesar")
-def procesar(payload: PromptRequest, request: Request):
+async def procesar(payload: PromptRequest, request: Request):
     try:
         user_text = payload.text
-        client_ip = request.headers.get("x-forwarded-for")
-        if client_ip:
-            client_ip = client_ip.split(",")[0].strip()
-        else:
-            client_ip = request.client.host
+        texto_lower = user_text.lower()
 
-        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
+        # Interceptación de comandos físicos
+        if "prende la pc" in texto_lower or "encender la pc" in texto_lower:
+            if state.pc_status == "online":
+                respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
+            elif state.sentinel_ws:
+                await state.sentinel_ws.send_text(json.dumps({"action": "wake_on_lan"}))
+                state.pc_status = "waking"
+                respuesta_texto = "Enviando orden de encendido vía el centinela local..."
+            else:
+                respuesta_texto = "No puedo encender la PC en este momento porque el centinela local (iPhone 7) está desconectado de la red."
+        elif "apaga la pc" in texto_lower or "apagar la pc" in texto_lower:
+            if state.pc_agent_ws and state.pc_status == "online":
+                await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
+                respuesta_texto = "Enviando orden de apagado seguro a la PC..."
+            else:
+                respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
+        else:
+            client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
+            respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
 
         audio_b64 = ""
         if eleven_client:
@@ -271,8 +190,11 @@ def procesar(payload: PromptRequest, request: Request):
                     output_format="mp3_44100_128"
                 )
                 audio_bytes = b"".join(chunk for chunk in audio_stream)
-                # Si Render no tiene ffmpeg instalado, enviamos el mp3 en base64 directo
-                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
+                wav_io = io.BytesIO()
+                audio_wav.export(wav_io, format="wav")
+                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
             except Exception as audio_err:
                 print(f"⚠️ Audio omitido: {audio_err}")
 
@@ -282,13 +204,63 @@ def procesar(payload: PromptRequest, request: Request):
             "audio_base64": audio_b64
         }
     except Exception as e:
-        print("❌ ERROR CRÍTICO EN /procesar:")
+        print("❌ ERROR EN /procesar:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    
-# ============================================================
-# Frontend y Endpoints REST
-# ============================================================
+
+# ---------------------------------------------------------
+# WEBSOCKETS PARA CONTROL REMOTO
+# ---------------------------------------------------------
+@app.websocket("/ws/agent")
+async def websocket_agent(websocket: WebSocket):
+    secret = websocket.query_params.get("secret")
+    if secret != JARVIS_AGENT_SECRET:
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+    state.pc_agent_ws = websocket
+    state.pc_status = "online"
+    state.pc_last_seen = datetime.datetime.now().isoformat()
+    print("💻 Agente de PC Windows Conectado.")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            state.pc_last_seen = datetime.datetime.now().isoformat()
+            # Procesar pings/heartbeats del agente
+    except WebSocketDisconnect:
+        state.pc_agent_ws = None
+        state.pc_status = "offline"
+        print("💻 Agente de PC Windows Desconectado.")
+
+@app.websocket("/ws/sentinel")
+async def websocket_sentinel(websocket: WebSocket):
+    secret = websocket.query_params.get("secret")
+    if secret != JARVIS_SENTINEL_SECRET:
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+    state.sentinel_ws = websocket
+    state.sentinel_connected = True
+    print("📱 Centinela iPhone 7 Conectado.")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        state.sentinel_ws = None
+        state.sentinel_connected = False
+        print("📱 Centinela iPhone 7 Desconectado.")
+
+# ---------------------------------------------------------
+# FRONTEND HTML
+# ---------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML_FRONTEND
+
 HTML_FRONTEND = """
 <!DOCTYPE html>
 <html lang="es">
@@ -503,180 +475,3 @@ HTML_FRONTEND = """
 </body>
 </html>
 """
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTML_FRONTEND
-
-
-import traceback
-
-@app.post("/procesar")
-def procesar(payload: PromptRequest, request: Request):
-    try:
-        user_text = payload.text
-
-        client_ip = request.headers.get("x-forwarded-for")
-        if client_ip:
-            client_ip = client_ip.split(",")[0].strip()
-        else:
-            client_ip = request.client.host
-
-        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
-
-        audio_b64 = ""
-        if eleven_client:
-            try:
-                audio_stream = eleven_client.text_to_speech.convert(
-                    text=respuesta_texto[:250],
-                    voice_id="OqoIeNOqjjjkwABBwfFl",
-                    model_id="eleven_multilingual_v2",
-                    output_format="mp3_44100_128"
-                )
-                audio_bytes = b"".join(chunk for chunk in audio_stream)
-                audio_mp3 = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-                audio_wav = audio_mp3.set_frame_rate(44100).set_channels(1)
-                wav_io = io.BytesIO()
-                audio_wav.export(wav_io, format="wav")
-                audio_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
-            except Exception as audio_err:
-                print(f"⚠️ Audio omitido por latencia: {audio_err}")
-
-        return {
-            "status": "ok",
-            "respuesta_texto": respuesta_texto,
-            "audio_base64": audio_b64
-        }
-    except Exception as e:
-        print("❌ ERROR EN /procesar:")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/status")
-def get_status():
-    return state.snapshot()
-
-
-# ============================================================
-# WebSockets (Agent, Sentinel, Client)
-# ============================================================
-@app.websocket("/ws/agent")
-async def ws_agent(websocket: WebSocket):
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not AGENT_SECRET or not _tokens_match(token, AGENT_SECRET):
-        await websocket.close(code=4401)
-        return
-
-    await websocket.accept()
-    state.agent_connected(websocket)
-    print("✅ Agente de PC conectado.")
-
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            msg_type = msg.get("type")
-            if msg_type == "heartbeat":
-                state.last_agent_heartbeat = time.time()
-            elif msg_type == "command_result":
-                print(f"📩 Resultado de comando: {msg.get('payload')}")
-            else:
-                print(f"⚠️ Mensaje desconocido del agente: {msg}")
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        state.agent_disconnected()
-        print("🔌 Agente de PC desconectado.")
-
-
-@app.websocket("/ws/sentinel")
-async def ws_sentinel(websocket: WebSocket):
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not SENTINEL_SECRET or not _tokens_match(token, SENTINEL_SECRET):
-        await websocket.close(code=4401)
-        return
-
-    await websocket.accept()
-    state.sentinel_connected(websocket)
-    print("✅ Centinela conectado.")
-
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
-            if msg.get("type") == "heartbeat":
-                state.last_sentinel_heartbeat = time.time()
-            elif msg.get("type") == "wol_sent":
-                print("📡 Centinela confirmó envío de paquete WoL.")
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        state.sentinel_disconnected()
-        print("🔌 Centinela desconectado.")
-
-
-@app.websocket("/ws/client")
-async def ws_client(websocket: WebSocket):
-    token = websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not CLIENT_SECRET or not _tokens_match(token, CLIENT_SECRET):
-        await websocket.close(code=4401)
-        return
-
-    await websocket.accept()
-
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                await websocket.send_json({"type": "error", "detail": "JSON inválido"})
-                continue
-
-            if msg.get("type") == "pc_command":
-                await handle_pc_command(websocket, msg.get("action"), msg.get("payload", {}))
-            else:
-                await websocket.send_json({"type": "error", "detail": f"Tipo de mensaje desconocido: {msg.get('type')}"})
-
-    except WebSocketDisconnect:
-        pass
-
-
-async def handle_pc_command(client_ws: WebSocket, action: str, payload: dict):
-    if action == "wake":
-        if state.pc_status == PCStatus.ONLINE:
-            await client_ws.send_json({"type": "pc_status", "status": "already_online"})
-            return
-
-        if state.sentinel_ws is None:
-            await client_ws.send_json({
-                "type": "error",
-                "detail": "El centinela (iPhone 7) no está conectado. No se puede despertar la PC."
-            })
-            return
-
-        await state.sentinel_ws.send_json({"type": "send_wol"})
-        state.mark_waking()
-        await client_ws.send_json({"type": "pc_status", "status": "waking"})
-        return
-
-    if state.pc_status != PCStatus.ONLINE or state.agent_ws is None:
-        await client_ws.send_json({
-            "type": "error",
-            "detail": f"La PC no está online (estado actual: {state.pc_status.value}). Pedí 'wake' primero."
-        })
-        return
-
-    await state.agent_ws.send_json({"type": "command", "action": action, "payload": payload})
-    await client_ws.send_json({"type": "pc_status", "status": "command_sent"})
