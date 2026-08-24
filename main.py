@@ -5,7 +5,6 @@ import os
 import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
 from google import genai
 from elevenlabs import ElevenLabs
 import requests
@@ -82,7 +81,7 @@ def generar_respuesta_gemini(user_text: str, image_bytes: bytes = None, client_i
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model="gemini-3.6-flash",  # <--- Versión actualizada solicitada
+                model="gemini-3.6-flash",
                 contents=contents,
                 config={
                     "system_instruction": (
