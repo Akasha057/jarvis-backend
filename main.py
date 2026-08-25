@@ -1,5 +1,4 @@
 import base64
-import itertools
 import json
 import os
 import socket
@@ -23,26 +22,6 @@ WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
-# ---------------------------------------------------------
-# SISTEMA DE ROTACIÓN DE API KEYS (10 KEYS)
-# ---------------------------------------------------------
-# Lee la variable GEMINI_API_KEY que contiene las 10 claves separadas por comas
-raw_keys_env = os.environ.get("GEMINI_API_KEY", "")
-
-# Limpia espacios, saltos de línea y comillas de cada clave
-API_KEYS_LIST = [k.strip().strip('"').strip("'") for k in raw_keys_env.split(",") if k.strip()]
-
-# Iterador cíclico infinito para alternar entre las 10 claves
-key_cycle = itertools.cycle(API_KEYS_LIST) if API_KEYS_LIST else None
-
-
-def obtener_siguiente_api_key() -> str | None:
-    """Retorna la siguiente clave de la lista de 10 claves disponible."""
-    if not key_cycle:
-        return None
-    return next(key_cycle)
-
-
 # Instancia de FastAPI
 app = FastAPI()
 
@@ -56,6 +35,9 @@ class AppState:
 
 state = AppState()
 
+# Puntero global para la rotación de claves
+key_index = 0
+
 # ---------------------------------------------------------
 # MODELOS DE PETICIÓN
 # ---------------------------------------------------------
@@ -65,6 +47,28 @@ class PromptRequest(BaseModel):
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES
 # ---------------------------------------------------------
+def obtener_lista_api_keys() -> list[str]:
+    """
+    Carga de forma dinámica todas las claves definidas bajo las variables:
+    GEMINI_API_KEY_1, GEMINI_API_KEY_2, ..., GEMINI_API_KEY_10.
+    Si no encuentra variables numeradas, recurre a GEMINI_API_KEY.
+    """
+    keys = []
+    
+    # 1. Busca variables numeradas individuales
+    for i in range(1, 11):
+        key = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
+        if key:
+            keys.append(key)
+            
+    # 2. Respaldo por si se usa una sola variable separada por comas
+    if not keys:
+        raw_keys = os.environ.get("GEMINI_API_KEY", "")
+        keys = [k.strip().strip('"').strip("'") for k in raw_keys.split(",") if k.strip()]
+        
+    return keys
+
+
 def enviar_magic_packet():
     """Actualiza la IP pública en DuckDNS y manda el paquete WoL UDP directo al router."""
     if not DUCKDNS_TOKEN or not DUCKDNS_DOMAIN or not TARGET_MAC:
@@ -99,36 +103,47 @@ def enviar_magic_packet():
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """
-    Genera la respuesta usando gemini-3.6-flash rotando entre las 10 API Keys (formato AQ).
+    Intenta generar la respuesta usando gemini-3.7-flash probando la lista de API Keys una por una.
+    Si una clave falla (ej. error 401 o límite de uso), conmuta automáticamente a la siguiente.
     """
-    current_key = obtener_siguiente_api_key()
+    global key_index
+    keys = obtener_lista_api_keys()
     
-    if not current_key:
-        print("⚠️ GEMINI_API_KEY no encontrada o vacía en las variables de entorno.")
+    if not keys:
+        print("⚠️ No se encontraron claves de Gemini en las variables de entorno.")
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas."
 
-    try:
-        # Configuración del cliente asegurando el paso explícito de la API Key
-        client = genai.Client(api_key=current_key)
+    total_keys = len(keys)
+    
+    for intento in range(total_keys):
+        current_key = keys[(key_index + intento) % total_keys]
+        
+        try:
+            client = genai.Client(api_key=current_key)
 
-        system_instruction = (
-            "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
-            "Responde de manera concisa y clara."
-        )
-
-        chat = client.chats.create(
-            model="gemini-3.6-flash",
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction
+            system_instruction = (
+                "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
+                "Responde de manera concisa y clara."
             )
-        )
 
-        response = chat.send_message(f"Cliente IP: {client_ip}\nUsuario: {prompt}")
-        return response.text
+            chat = client.chats.create(
+                model="gemini-3.7-flash",
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction
+                )
+            )
 
-    except Exception as e:
-        print(f"⚠️ Error al llamar a Gemini 3.6 Flash (Key finalizada en ...{current_key[-6:]}): {e}")
-        return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
+            response = chat.send_message(f"Cliente IP: {client_ip}\nUsuario: {prompt}")
+            
+            # Avanza el puntero global para equilibrar la carga en las siguientes llamadas
+            key_index = (key_index + intento + 1) % total_keys
+            return response.text
+
+        except Exception as e:
+            print(f"⚠️ Error con la API Key ...{current_key[-6:]} (intento {intento + 1}/{total_keys}): {e}")
+            # Si falla, el bucle for continúa con la siguiente clave
+
+    return "Disculpe, señor. Ocurrió un error en todos los accesos al sistema Gemini."
 
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
@@ -546,7 +561,7 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini 3.6 Flash
+    # Conversación general con Gemini 3.7 Flash
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
