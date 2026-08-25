@@ -214,7 +214,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con sondeo automático de estado y botón de TeamViewer."""
+    """Retorna la interfaz web de JARVIS con sondeo de estado, visor web de TeamViewer y botones de audio por mensaje."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -288,9 +288,7 @@ def read_root():
             .status-waking { color: #ffaa00; border-color: #ffaa00; }
             .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
             
-            .remote-access-bar {
-                margin: 10px 0;
-            }
+            .remote-access-bar { margin: 10px 0; }
             .btn-remote {
                 background: rgba(37, 99, 235, 0.2);
                 border-color: #2563eb;
@@ -322,9 +320,38 @@ def read_root():
             }
             .chat-log::-webkit-scrollbar { width: 6px; }
             .chat-log::-webkit-scrollbar-thumb { background: var(--cyan-dim); border-radius: 3px; }
-            .msg { max-width: 80%; padding: 10px 14px; border-radius: 6px; font-size: 1.05rem; line-height: 1.4; }
-            .msg.user { align-self: flex-end; background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: #ffffff; }
-            .msg.jarvis { align-self: flex-start; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); color: #e0f7fc; }
+            
+            .msg-container {
+                display: flex; flex-direction: column; max-width: 80%;
+            }
+            .msg-container.user { align-self: flex-end; align-items: flex-end; }
+            .msg-container.jarvis { align-self: flex-start; align-items: flex-start; }
+
+            .msg { padding: 10px 14px; border-radius: 6px; font-size: 1.05rem; line-height: 1.4; width: 100%; }
+            .msg.user { background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: #ffffff; }
+            .msg.jarvis { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); color: #e0f7fc; }
+
+            .audio-toolbar {
+                display: flex; gap: 6px; margin-top: 5px;
+            }
+            .btn-audio-action {
+                background: rgba(0, 240, 255, 0.1);
+                border: 1px solid var(--cyan-dim);
+                color: var(--cyan-glow);
+                font-family: 'Rajdhani', sans-serif;
+                font-size: 0.8rem;
+                padding: 2px 8px;
+                border-radius: 3px;
+                cursor: pointer;
+                font-weight: 600;
+                transition: all 0.2s;
+            }
+            .btn-audio-action:hover {
+                background: var(--cyan-glow);
+                color: #000;
+                box-shadow: 0 0 6px var(--cyan-glow);
+            }
+
             .controls { display: flex; gap: 10px; }
             input[type="text"] {
                 flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--border-color);
@@ -356,7 +383,9 @@ def read_root():
 
         <main class="main-panel">
             <div class="chat-log" id="chatLog">
-                <div class="msg jarvis">Sistemas en línea, señor. ¿En qué puedo ayudarle hoy?</div>
+                <div class="msg-container jarvis">
+                    <div class="msg jarvis">Sistemas en línea, señor. ¿En qué puedo ayudarle hoy?</div>
+                </div>
             </div>
 
             <div class="controls">
@@ -406,7 +435,6 @@ def read_root():
                 statusBadge.innerText = status.toUpperCase();
             }
 
-            // Sondeo periódico del estado de la PC cada 3 segundos
             async function verificarEstadoPC() {
                 try {
                     const response = await fetch("/estado");
@@ -420,11 +448,38 @@ def read_root():
             }
             setInterval(verificarEstadoPC, 3000);
 
-            function agregarMensaje(texto, sender) {
+            function agregarMensaje(texto, sender, audioBase64 = null) {
+                const containerDiv = document.createElement("div");
+                containerDiv.className = "msg-container " + sender;
+
                 const msgDiv = document.createElement("div");
                 msgDiv.className = "msg " + sender;
                 msgDiv.innerText = texto;
-                chatLog.appendChild(msgDiv);
+                containerDiv.appendChild(msgDiv);
+
+                // Si el mensaje es de JARVIS y contiene audio sintetizado, agregamos la barra de herramientas de audio
+                if (sender === "jarvis" && audioBase64) {
+                    const toolbar = document.createElement("div");
+                    toolbar.className = "audio-toolbar";
+
+                    // Botón para reproducir audio individualmente
+                    const btnPlay = document.createElement("button");
+                    btnPlay.className = "btn-audio-action";
+                    btnPlay.innerHTML = "▶ Reproducir";
+                    btnPlay.onclick = () => reproducirAudioBase64(audioBase64);
+
+                    // Botón para descargar el audio en formato MP3
+                    const btnDownload = document.createElement("button");
+                    btnDownload.className = "btn-audio-action";
+                    btnDownload.innerHTML = "💾 Descargar";
+                    btnDownload.onclick = () => descargarAudioBase64(audioBase64);
+
+                    toolbar.appendChild(btnPlay);
+                    toolbar.appendChild(btnDownload);
+                    containerDiv.appendChild(toolbar);
+                }
+
+                chatLog.appendChild(containerDiv);
                 chatLog.scrollTop = chatLog.scrollHeight;
             }
 
@@ -432,8 +487,18 @@ def read_root():
                 if (!base64Audio) return;
                 const audio = new Audio("data:audio/mp3;base64," + base64Audio);
                 arcReactor.classList.add("speaking");
-                audio.play().catch(e => console.log("Audio autostart blocked", e));
+                audio.play().catch(e => console.log("Audio play blocked", e));
                 audio.onended = () => arcReactor.classList.remove("speaking");
+            }
+
+            function descargarAudioBase64(base64Audio) {
+                if (!base64Audio) return;
+                const link = document.createElement('a');
+                link.href = "data:audio/mp3;base64," + base64Audio;
+                link.download = "jarvis_audio_" + Date.now() + ".mp3";
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
             }
 
             async function enviarMensaje() {
@@ -451,8 +516,13 @@ def read_root():
                     });
 
                     const data = await response.json();
-                    if (data.respuesta) { agregarMensaje(data.respuesta, "jarvis"); }
-                    if (data.audio_b64) { reproducirAudioBase64(data.audio_b64); }
+                    if (data.respuesta) { 
+                        agregarMensaje(data.respuesta, "jarvis", data.audio_b64); 
+                        // Reproducción automática global al recibir la respuesta
+                        if (data.audio_b64) {
+                            reproducirAudioBase64(data.audio_b64);
+                        }
+                    }
                     if (data.pc_status) { actualizarEstadoUI(data.pc_status); }
 
                 } catch (err) {
@@ -501,7 +571,7 @@ def procesar(payload: PromptRequest, request: Request):
             loop.close()
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
-            respuesta_texto = "La PC não está conectada o ya se encuentra apagada."
+            respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
