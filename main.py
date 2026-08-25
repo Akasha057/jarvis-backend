@@ -17,13 +17,14 @@ from pydantic import BaseModel
 DUCKDNS_DOMAIN = os.environ.get("DUCKDNS_DOMAIN", "")
 DUCKDNS_TOKEN = os.environ.get("DUCKDNS_TOKEN", "")
 TARGET_MAC = os.environ.get("TARGET_MAC", "")
+BROADCAST_IP = os.environ.get("BROADCAST_IP", "192.168.1.255")
 WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
 # Versión del sistema para el Heartbeat del puente local
-APP_VERSION = "2026.08.25-01"
+APP_VERSION = "2026.08.25-02"
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -71,19 +72,20 @@ def obtener_lista_api_keys() -> list[str]:
 
 
 def enviar_magic_packet():
-    """Fallback: Actualiza la IP pública en DuckDNS y manda el paquete WoL UDP directo al router."""
-    if not DUCKDNS_TOKEN or not DUCKDNS_DOMAIN or not TARGET_MAC:
-        print("⚠️ Faltan credenciales o la MAC en las variables de entorno.")
+    """Actualiza DuckDNS y envía el paquete WoL por Broadcast UDP utilizando la configuración privada."""
+    if not TARGET_MAC:
+        print("⚠️ La MAC objetivo no está configurada en las variables de entorno.")
         return
 
-    try:
-        requests.get(
-            f"https://www.duckdns.org/update?domains={DUCKDNS_DOMAIN}&token={DUCKDNS_TOKEN}",
-            timeout=3
-        )
-        print("✅ IP pública actualizada en DuckDNS.")
-    except Exception as e:
-        print(f"⚠️ Error actualizando DuckDNS: {e}")
+    if DUCKDNS_TOKEN and DUCKDNS_DOMAIN:
+        try:
+            requests.get(
+                f"https://www.duckdns.org/update?domains={DUCKDNS_DOMAIN}&token={DUCKDNS_TOKEN}",
+                timeout=3
+            )
+            print("✅ IP pública actualizada en DuckDNS.")
+        except Exception as e:
+            print(f"⚠️ Error actualizando DuckDNS: {e}")
 
     try:
         mac_limpia = TARGET_MAC.replace(":", "").replace("-", "")
@@ -96,8 +98,8 @@ def enviar_magic_packet():
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.sendto(magic_packet, (f"{DUCKDNS_DOMAIN}.duckdns.org", WOL_PORT))
-        print(f"📡 Magic Packet enviado exitosamente al puerto {WOL_PORT}")
+            sock.sendto(magic_packet, (BROADCAST_IP, WOL_PORT))
+        print(f"📡 Magic Packet enviado exitosamente a la red local ({BROADCAST_IP}:{WOL_PORT})")
     except Exception as e:
         print(f"⚠️ Error enviando Magic Packet: {e}")
 
