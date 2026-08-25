@@ -94,7 +94,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         )
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",  # O el modelo alias correspondiente
+            model="gemini-3.7-flash",  # O el modelo alias correspondiente
             contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction
