@@ -4,6 +4,7 @@ import os
 import socket
 import asyncio
 import datetime
+import re
 import requests
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response
@@ -44,6 +45,7 @@ key_index = 0
 # ---------------------------------------------------------
 class PromptRequest(BaseModel):
     text: str
+    local_time: str | None = None
 
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -107,7 +109,7 @@ def _llamar_gemini_sync(key: str, prompt_con_contexto: str, modelo: str) -> str 
         "system_instruction": {
             "parts": [
                 {
-                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Tienes acceso a la hora y el clima actual del usuario en tiempo real mediante el contexto provisto. Responde de manera concisa y clara."
+                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Tienes acceso a la hora local del usuario y al clima en tiempo real del lugar consultado mediante el contexto provisto. Responde de manera concisa y clara."
                 }
             ]
         },
@@ -215,7 +217,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con detección automática de ubicación horaria y climática."""
+    """Retorna la interfaz web de JARVIS con captura de hora local."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -502,7 +504,7 @@ def read_root():
                 agregarMensaje(text, "user");
                 userInput.value = "";
 
-                // Obtenemos la hora local del navegador del cliente
+                // Hora local exacta del dispositivo del usuario
                 const localTimeStr = new Date().toLocaleString('es-AR', { hour12: false });
 
                 try {
@@ -533,11 +535,6 @@ def read_root():
     </html>
     """
     return HTMLResponse(content=html_content)
-
-
-class PromptRequest(BaseModel):
-    text: str
-    local_time: str | None = None
 
 
 @app.post("/procesar")
@@ -579,14 +576,11 @@ def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
     else:
-        # Detectamos la ubicación del usuario consultando su IP pública mediante un servicio gratuito
+        # Detectamos la ubicación por IP del cliente
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         
         ubicacion_detectada = "Desconocida"
-        clima_detectado = "No disponible"
-        
         try:
-            # Geolocalización rápida por IP
             geo_res = requests.get(f"http://ip-api.com/json/{client_ip}?fields=city,region,country", timeout=2)
             if geo_res.status_code == 200:
                 geo_data = geo_res.json()
@@ -597,11 +591,20 @@ def procesar(payload: PromptRequest, request: Request):
         except Exception:
             pass
 
+        # Detectamos si el usuario especificó otra ciudad en el texto (ej: "en Madrid", "de Paris", "para Cordoba")
+        ciudad_especifica = None
+        match = re.search(r'\b(?:en|de|para)\s+([A-ZÁÉÍÓÚ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúñ]+)*)', user_text)
+        if match and any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "grado", "llueve", "calor", "frio"]):
+            ciudad_especifica = match.group(1)
+
+        # Definimos qué ciudad consultar (la específica si la nombró, o su ubicación por defecto)
+        lugar_a_consultar = ciudad_especifica if ciudad_especifica else ubicacion_detectada.split(",")[0]
+        
+        clima_detectado = "No disponible"
         try:
-            # Si detectamos una ciudad, consultamos el clima actual de esa misma ciudad
-            if ubicacion_detectada != "Desconocida":
-                ciudad_query = ubicacion_detectada.split(",")[0].replace(" ", "+")
-                clima_res = requests.get(f"https://wttr.in/{ciudad_query}?format=%C+%t", timeout=2)
+            if lugar_a_consultar and lugar_a_consultar != "Desconocida":
+                lugar_query = lugar_a_consultar.replace(" ", "+")
+                clima_res = requests.get(f"https://wttr.in/{lugar_query}?format=%C+%t", timeout=2)
                 if clima_res.status_code == 200:
                     clima_detectado = clima_res.text.strip()
         except Exception:
@@ -611,8 +614,8 @@ def procesar(payload: PromptRequest, request: Request):
         prompt_con_contexto = (
             f"[Contexto del Sistema en Tiempo Real]\n"
             f"- Hora local del usuario: {local_time}\n"
-            f"- Ubicación aproximada detectada: {ubicacion_detectada}\n"
-            f"- Clima actual en la ubicación: {clima_detectado}\n\n"
+            f"- Ubicación base del usuario: {ubicacion_detectada}\n"
+            f"- Clima actual en ({lugar_a_consultar}): {clima_detectado}\n\n"
             f"Mensaje del usuario: {user_text}"
         )
 
