@@ -90,7 +90,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         # Configuración directa previa a la llamada
         genai.configure(api_key=api_key)
 
-        model = genai.GenerativeModel("gemini-2.0-flash") # Asegúrate de usar un modelo soportado (ej. gemini-2.0-flash)
+        model = genai.GenerativeModel("gemini-3.6-flash") # Asegúrate de usar un modelo soportado (ej. gemini-2.0-flash)
         
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
