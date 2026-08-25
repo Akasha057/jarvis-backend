@@ -77,16 +77,16 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini Flash con el nuevo SDK google-genai."""
+    """Genera la respuesta usando Gemini Flash con el SDK google-genai."""
     try:
-        # 1. Obtener la clave limpiando espacios accidentales
+        # Leer únicamente la variable en singular
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         
         if not api_key:
             print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # 2. Instanciar el cliente pasando la API Key explícitamente
+        # Instanciar el cliente con la API key explícita
         client = genai.Client(api_key=api_key)
 
         system_instruction = (
