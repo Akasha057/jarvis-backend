@@ -95,7 +95,7 @@ def enviar_magic_packet():
 
 
 def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
-    """Llamada HTTP REST directa a Gemini para evitar el envío de Authorization: Bearer por parte del SDK."""
+    """Llamada HTTP REST directa a Gemini."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={key}"
     
     headers = {
@@ -143,7 +143,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     keys = obtener_lista_api_keys()
     
     if not keys:
-        print("⚠️ No se encontraron claves de Gemini en variables de entorno.")
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
@@ -161,9 +160,9 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
                 return resultado
 
         except TimeoutError:
-            print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo_unico}")
+            print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]}")
         except Exception as e:
-            print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo_unico}: {e}")
+            print(f"⚠️ Error con Key ...{current_key[-6:]}: {e}")
             if "401" in str(e) or "UNAUTHENTICATED" in str(e):
                 continue
 
@@ -204,13 +203,18 @@ def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
 # ---------------------------------------------------------
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    """Manejo explícito para evitar 404 en navegadores antiguos."""
     return Response(status_code=204)
+
+
+@app.get("/estado")
+def obtener_estado():
+    """Endpoint que devuelve el estado actual de la PC para la UI web."""
+    return {"pc_status": state.pc_status}
 
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS."""
+    """Retorna la interfaz web de JARVIS con sondeo automático de estado."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -376,6 +380,20 @@ def read_root():
                 statusBadge.innerText = status.toUpperCase();
             }
 
+            // Sondeo periódico del estado de la PC cada 3 segundos
+            async function verificarEstadoPC() {
+                try {
+                    const response = await fetch("/estado");
+                    const data = await response.json();
+                    if (data.pc_status) {
+                        actualizarEstadoUI(data.pc_status);
+                    }
+                } catch (err) {
+                    console.log("Error consultando estado");
+                }
+            }
+            setInterval(verificarEstadoPC, 3000);
+
             function agregarMensaje(texto, sender) {
                 const msgDiv = document.createElement("div");
                 msgDiv.className = "msg " + sender;
@@ -424,17 +442,13 @@ def read_root():
 
 @app.post("/procesar")
 def procesar(payload: PromptRequest, request: Request):
-    """Ejecución síncrona en ThreadPool para no bloquear la aplicación."""
     user_text = payload.text
     texto_lower = user_text.lower()
     respuesta_texto = ""
 
-    # Lógica de encendido de PC
     if any(cmd in texto_lower for cmd in ["prende la pc", "encender la pc", "prender la pc", "enciende la pc"]):
         if state.pc_status == "online":
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
-        
-        # Opción A: Mandar orden al iPhone 7 vía WebSocket (Puente Local)
         elif state.relay_ws is not None:
             try:
                 loop = asyncio.new_event_loop()
@@ -448,14 +462,11 @@ def procesar(payload: PromptRequest, request: Request):
                 enviar_magic_packet()
                 state.pc_status = "waking"
                 respuesta_texto = "Enviando orden de encendido por paquete WoL tradicional..."
-        
-        # Opción B: Fallback directo mediante DuckDNS
         else:
             enviar_magic_packet()
             state.pc_status = "waking"
             respuesta_texto = "Enviando orden de encendido por paquete WoL a su red local..."
 
-    # Lógica de apagado de PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
         if state.pc_agent_ws and state.pc_status == "online":
             loop = asyncio.new_event_loop()
@@ -466,7 +477,6 @@ def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
@@ -491,7 +501,6 @@ async def websocket_agent(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            print(f"📩 Mensaje del agente PC: {data}")
     except WebSocketDisconnect:
         print("🔌 Agente PC desconectado.")
         state.pc_agent_ws = None
@@ -500,7 +509,6 @@ async def websocket_agent(websocket: WebSocket):
 
 @app.websocket("/ws/relay")
 async def websocket_relay(websocket: WebSocket):
-    """Endpoint al que se conecta el iPhone 7 (Puente local WoL) permanentemente."""
     await websocket.accept()
     state.relay_ws = websocket
     print("📱 iPhone 7 (Puente local WoL) conectado y escuchando.")
@@ -508,7 +516,6 @@ async def websocket_relay(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            print(f"📩 Mensaje del iPhone 7: {data}")
     except WebSocketDisconnect:
         print("📱 iPhone 7 desconectado.")
         state.relay_ws = None
