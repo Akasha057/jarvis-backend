@@ -46,6 +46,8 @@ key_index = 0
 class PromptRequest(BaseModel):
     text: str
     local_time: str | None = None
+    lat: float | None = None
+    lon: float | None = None
 
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -109,7 +111,7 @@ def _llamar_gemini_sync(key: str, prompt_con_contexto: str, modelo: str) -> str 
         "system_instruction": {
             "parts": [
                 {
-                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Tienes acceso a la hora local del usuario y al clima en tiempo real del lugar consultado mediante el contexto provisto. Responde de manera concisa y clara."
+                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Tienes acceso a la hora local del usuario y al clima en tiempo real del lugar exacto mediante el contexto provisto. Responde de manera concisa y clara."
                 }
             ]
         },
@@ -146,7 +148,7 @@ def generar_respuesta_con_flash(prompt_con_contexto: str) -> str:
     keys = obtener_lista_api_keys()
     
     if not keys:
-        return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
+        return "Disculpe, señor. Las claves de API de Gemini não están configuradas en Render."
 
     total_keys = len(keys)
     modelo_unico = "gemini-3.6-flash"
@@ -217,7 +219,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con captura de hora local."""
+    """Retorna la interfaz web de JARVIS con geolocalización GPS por navegador."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -398,12 +400,29 @@ def read_root():
             let pcStatus = "offline";
             let recognition = null;
             let isRecording = false;
+            let userLat = null;
+            let userLon = null;
 
             const chatLog = document.getElementById("chatLog");
             const userInput = document.getElementById("userInput");
             const statusBadge = document.getElementById("statusBadge");
             const arcReactor = document.getElementById("arcReactor");
             const btnMic = document.getElementById("btnMic");
+
+            // Solicitar geolocalización GPS al navegador de forma automática al cargar
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        userLat = position.coords.latitude;
+                        userLon = position.coords.longitude;
+                        console.log("📍 Ubicación GPS precisa obtenida:", userLat, userLon);
+                    },
+                    (error) => {
+                        console.log("⚠️ Geolocalización denegada o no disponible, usando fallback por IP.");
+                    },
+                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                );
+            }
 
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -504,7 +523,7 @@ def read_root():
                 agregarMensaje(text, "user");
                 userInput.value = "";
 
-                // Hora local exacta del dispositivo del usuario
+                // Hora local exacta del dispositivo
                 const localTimeStr = new Date().toLocaleString('es-AR', { hour12: false });
 
                 try {
@@ -513,7 +532,9 @@ def read_root():
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ 
                             text: text,
-                            local_time: localTimeStr 
+                            local_time: localTimeStr,
+                            lat: userLat,
+                            lon: userLon
                         })
                     });
 
@@ -576,28 +597,46 @@ def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
     else:
-        # Detectamos la ubicación por IP del cliente
-        client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
-        
         ubicacion_detectada = "Desconocida"
-        try:
-            geo_res = requests.get(f"http://ip-api.com/json/{client_ip}?fields=city,region,country", timeout=2)
-            if geo_res.status_code == 200:
-                geo_data = geo_res.json()
-                ciudad = geo_data.get("city")
-                region = geo_data.get("region")
-                if ciudad:
-                    ubicacion_detectada = f"{ciudad}, {region}"
-        except Exception:
-            pass
+        
+        # 1. Si el navegador envió coordenadas GPS precisas, las convertimos a nombre de localidad real (ej: Billinghurst)
+        if payload.lat is not None and payload.lon is not None:
+            try:
+                rev_res = requests.get(
+                    f"https://nominatim.openstreetmap.org/reverse?format=json&lat={payload.lat}&lon={payload.lon}&zoom=14",
+                    headers={"User-Agent": "JarvisAssistant/1.0"},
+                    timeout=3
+                )
+                if rev_res.status_code == 200:
+                    address = rev_res.json().get("address", {})
+                    # Buscamos pueblo, barrio, ciudad o municipio
+                    localidad = address.get("town") or address.get("suburb") or address.get("city") or address.get("village")
+                    región = address.get("state")
+                    if localidad:
+                        ubicacion_detectada = f"{localidad}, {región}" if región else localidad
+            except Exception as e:
+                print(f"⚠️ Error en geolocalización GPS inversa: {e}")
 
-        # Detectamos si el usuario especificó otra ciudad en el texto (ej: "en Madrid", "de Paris", "para Cordoba")
+        # 2. Fallback por IP si el GPS no estuviese disponible
+        if ubicacion_detectada == "Desconocida":
+            client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
+            try:
+                geo_res = requests.get(f"http://ip-api.com/json/{client_ip}?fields=city,region,country", timeout=2)
+                if geo_res.status_code == 200:
+                    geo_data = geo_res.json()
+                    ciudad = geo_data.get("city")
+                    region = geo_data.get("region")
+                    if ciudad:
+                        ubicacion_detectada = f"{ciudad}, {region}"
+            except Exception:
+                pass
+
+        # Detectamos si el usuario especificó otra ciudad explícitamente en el texto
         ciudad_especifica = None
         match = re.search(r'\b(?:en|de|para)\s+([A-ZÁÉÍÓÚ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúñ]+)*)', user_text)
         if match and any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "grado", "llueve", "calor", "frio"]):
             ciudad_especifica = match.group(1)
 
-        # Definimos qué ciudad consultar (la específica si la nombró, o su ubicación por defecto)
         lugar_a_consultar = ciudad_especifica if ciudad_especifica else ubicacion_detectada.split(",")[0]
         
         clima_detectado = "No disponible"
@@ -610,11 +649,11 @@ def procesar(payload: PromptRequest, request: Request):
         except Exception:
             pass
 
-        # Construimos el bloque de contexto exacto para Gemini
+        # Contexto exacto para Gemini
         prompt_con_contexto = (
             f"[Contexto del Sistema en Tiempo Real]\n"
             f"- Hora local del usuario: {local_time}\n"
-            f"- Ubicación base del usuario: {ubicacion_detectada}\n"
+            f"- Ubicación precisa del usuario: {ubicacion_detectada}\n"
             f"- Clima actual en ({lugar_a_consultar}): {clima_detectado}\n\n"
             f"Mensaje del usuario: {user_text}"
         )
@@ -642,7 +681,7 @@ async def websocket_agent(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
     except WebSocketDisconnect:
-        print("🔌 Agente PC desconectado.")
+        print("🔌 Agente PC conectado.")
         state.pc_agent_ws = None
         state.pc_status = "offline"
 
