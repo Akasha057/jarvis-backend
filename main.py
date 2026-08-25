@@ -24,7 +24,7 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
 # Versión del sistema para el Heartbeat del puente local
-APP_VERSION = "2026.08.25-02"
+APP_VERSION = "2026.08.25-03"
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -99,7 +99,7 @@ def enviar_magic_packet():
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.sendto(magic_packet, (BROADCAST_IP, WOL_PORT))
-        print(f"📡 Magic Packet enviado exitosamente a la red local ({BROADCAST_IP}:{WOL_PORT})")
+        print(f"📡 [LOG] Magic Packet WoL enviado exitosamente desde el servidor a la red local ({BROADCAST_IP}:{WOL_PORT})")
     except Exception as e:
         print(f"⚠️ Error enviando Magic Packet: {e}")
 
@@ -443,7 +443,7 @@ def read_root():
             setInterval(verificarActualizacionRemota, 60000);
             // -------------------------------------------------------------
 
-            // --- GESTIÓN DE LA IP LOCAL DE LA PC (LIMPIA DE EJEMPLOS) ---
+            // --- GESTIÓN DE LA IP LOCAL DE LA PC ---
             let localPcIp = localStorage.getItem("jarvis_local_pc_ip");
 
             function cambiarIpLocal() {
@@ -495,11 +495,13 @@ def read_root():
                     }
 
                     if (data.action === "shutdown_pc") {
+                        console.log("🖥️ [LOG] Ejecutando orden de apagado local en la red...");
                         fetch(`http://${localPcIp}/api/shutdown`, { method: "POST", mode: "no-cors" })
                             .then(() => console.log("Orden de apagado local disparada."))
                             .catch(err => console.error("Error al disparar apagado local:", err));
                     } 
                     else if (data.action === "wake_wol") {
+                        console.log("📡 [LOG] ¡Aviso! El puente local disparó la señal de encendido (Wake on LAN) en la red.");
                         fetch(`http://${localPcIp}/api/wol`, { method: "POST", mode: "no-cors" })
                             .then(() => console.log("Señal WoL local disparada."))
                             .catch(err => console.error("Error al disparar WoL local:", err));
@@ -655,6 +657,7 @@ async def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
         elif state.relay_ws is not None:
             try:
+                print("📡 [LOG] Ordenando al iPhone 7 puente disparar Wake on LAN...")
                 await state.relay_ws.send_text(json.dumps({"action": "wake_wol"}))
                 state.pc_status = "waking"
                 respuesta_texto = "Orden de encendido enviada al iPhone 7 puente en la red local..."
@@ -664,6 +667,7 @@ async def procesar(payload: PromptRequest, request: Request):
                 state.pc_status = "waking"
                 respuesta_texto = "Enviando orden de encendido por paquete WoL tradicional..."
         else:
+            print("📡 [LOG] Puente no disponible. Enviando WoL directo desde el servidor...")
             enviar_magic_packet()
             state.pc_status = "waking"
             respuesta_texto = "Enviando orden de encendido por paquete WoL a su red local..."
@@ -672,12 +676,14 @@ async def procesar(payload: PromptRequest, request: Request):
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
         if state.relay_ws is not None:
             try:
+                print("🖥️ [LOG] Ordenando al iPhone 7 puente ejecutar apagado seguro...")
                 await state.relay_ws.send_text(json.dumps({"action": "shutdown_pc"}))
                 respuesta_texto = "Enviando orden de apagado seguro al iPhone 7 puente..."
             except Exception as e:
                 print(f"⚠️ Error enviando apagado al relay: {e}")
                 respuesta_texto = "Error al comunicar con el puente local."
         elif state.pc_agent_ws and state.pc_status == "online":
+            print("🖥️ [LOG] Ordenando apagado a la PC mediante agente WebSocket...")
             await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
