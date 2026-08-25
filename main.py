@@ -77,15 +77,19 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini 3.6 Flash evitando el conflicto con Google Credentials."""
+    """Genera la respuesta asegurando el uso exclusivo de API Key."""
+    # 1. Eliminar temporalmente variables que fuerzan el flujo OAuth/Service Account
+    creds_env = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    
     try:
+        # 2. Obtener la API key de Gemini
         api_key = os.environ.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
         
         if not api_key:
             print("⚠️ GEMINI_API_KEY no encontrada.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Instanciación explícita deshabilitando el fallback a OAuth/Service Account
+        # 3. Inicializar el cliente únicamente con la API Key
         client = genai.Client(api_key=api_key)
 
         response = client.models.generate_content(
@@ -96,9 +100,15 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
             )
         )
         return response.text
+
     except Exception as e:
         print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
+
+    finally:
+        # 4. Restaurar la variable para que el resto del sistema (como Google Drive) la siga usando
+        if creds_env:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_env
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
