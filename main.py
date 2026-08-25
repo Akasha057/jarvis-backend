@@ -24,7 +24,7 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
 # Versión del sistema para el Heartbeat del puente local
-APP_VERSION = "2026.08.25-04"
+APP_VERSION = "2026.08.25-05"
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -39,7 +39,7 @@ class AppState:
     def __init__(self):
         self.pc_status = "offline"  # offline, waking, online
         self.pc_agent_ws: WebSocket | None = None
-        self.relay_ws: WebSocket | None = None  # WebSocket del iPhone 7 (Puente local)
+        self.accion_pendiente: str | None = None  # Orden para el puente Scriptable del iPhone 7
 
 state = AppState()
 key_index = 0
@@ -150,7 +150,7 @@ def generar_respuesta_con_flash(prompt_con_contexto: str) -> str:
     keys = obtener_lista_api_keys()
     
     if not keys:
-        return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
+        return "Disculpe, señor. Las claves de API de Gemini não están configuradas en Render."
 
     total_keys = len(keys)
     modelo_unico = "gemini-3.6-flash"
@@ -215,7 +215,7 @@ def favicon():
 
 @app.get("/version")
 def obtener_version():
-    """Devuelve la versión actual del código para el control de actualización remota (Heartbeat)."""
+    """Devuelve la versión actual del código para el control de actualización remota."""
     return {"version": APP_VERSION}
 
 
@@ -225,9 +225,18 @@ def obtener_estado():
     return {"pc_status": state.pc_status}
 
 
+@app.get("/estado-puente")
+def obtener_estado_puente():
+    """Endpoint de sondeo (polling) para que el Scriptable del iPhone 7 recoja órdenes pendientes."""
+    global state
+    accion = state.accion_pendiente
+    state.accion_pendiente = None  # Se limpia tras ser leída para que se ejecute una sola vez
+    return {"accion_pendiente": accion}
+
+
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con geolocalización GPS, control de puente local y autoevaluación."""
+    """Retorna la interfaz web principal de JARVIS."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -388,8 +397,7 @@ def read_root():
             <div>PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span></div>
             <div class="remote-access-bar">
                 <a href="https://start.teamviewer.com" class="btn-remote" target="_blank">🖥️ TEAMVIEWER WEB</a>
-                <span class="btn-remote" style="background: rgba(16, 185, 129, 0.2); border-color: #10b981; color: #34d399;" id="bridgeStatus">📱 PUENTE: DESCONECTADO</span>
-                <button class="btn-remote" style="background: rgba(245, 158, 11, 0.2); border-color: #f59e0b; color: #fbbf24;" onclick="cambiarIpLocal()">⚙️ CONFIG. IP</button>
+                <span class="btn-remote" style="background: rgba(16, 185, 129, 0.2); border-color: #10b981; color: #34d399;" id="bridgeStatus">📱 PUENTE SCRIPTABLE OK</span>
             </div>
         </header>
 
@@ -420,101 +428,30 @@ def read_root():
             const statusBadge = document.getElementById("statusBadge");
             const arcReactor = document.getElementById("arcReactor");
             const btnMic = document.getElementById("btnMic");
-            const bridgeStatus = document.getElementById("bridgeStatus");
 
-            // --- SISTEMA DE HEARTBEAT Y ACTUALIZACIÓN REMOTA AUTOMÁTICA ---
             async function verificarActualizacionRemota() {
                 try {
                     const response = await fetch("/version");
                     const data = await response.json();
-                    
-                    if (data.version) {
-                        if (currentAppVersion === null) {
-                            currentAppVersion = data.version;
-                        } else if (currentAppVersion !== data.version) {
-                            console.log("🔄 Nueva versión detectada en el servidor. Actualizando puente local...");
-                            location.reload();
-                        }
+                    if (data.version && currentAppVersion !== null && currentAppVersion !== data.version) {
+                        location.reload();
+                    } else if (currentAppVersion === null) {
+                        currentAppVersion = data.version;
                     }
-                } catch (err) {
-                    console.error("Error al verificar actualización del sistema:", err);
-                }
+                } catch (err) {}
             }
             setInterval(verificarActualizacionRemota, 60000);
-            // -------------------------------------------------------------
 
-            // --- GESTIÓN DE LA IP LOCAL DE LA PC ---
-            let localPcIp = localStorage.getItem("jarvis_local_pc_ip");
-
-            function cambiarIpLocal() {
-                const nuevaIp = prompt("Ingrese la IP local privada de su PC:", localPcIp || "");
-                if (nuevaIp && nuevaIp.trim() !== "") {
-                    localPcIp = nuevaIp.trim();
-                    localStorage.setItem("jarvis_local_pc_ip", localPcIp);
-                    alert("IP local actualizada correctamente.");
-                }
-            }
-
-            if (!localPcIp) {
-                setTimeout(() => { cambiarIpLocal(); }, 1000);
-            }
-            // -----------------------------------------------------------
-
-            // Geolocalización GPS del navegador
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
                         userLat = position.coords.latitude;
                         userLon = position.coords.longitude;
                     },
-                    (error) => { console.log("Ubicación GPS por IP fallback."); },
+                    (error) => {},
                     { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
                 );
             }
-
-            // --- CONEXIÓN WEBSOCKET DE RELAY PARA EL PUENTE LOCAL ---
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const relayWsUrl = `${protocol}//${window.location.host}/ws/relay`;
-            const relaySocket = new WebSocket(relayWsUrl);
-
-            relaySocket.onopen = function() {
-                console.log("Nodo puente conectado al relay.");
-                bridgeStatus.innerText = "📱 PUENTE: ACTIVO";
-                bridgeStatus.style.background = "rgba(16, 185, 129, 0.3)";
-            };
-
-            relaySocket.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    console.log("Orden de red local recibida:", data);
-
-                    if (!localPcIp) {
-                        console.error("No hay IP local configurada en este dispositivo puente.");
-                        alert("Configure la IP local de la PC usando el botón '⚙️ CONFIG. IP'.");
-                        return;
-                    }
-
-                    if (data.action === "shutdown_pc") {
-                        console.log("🖥️ [LOG] Ejecutando orden de apagado local en la red...");
-                        const img = new Image();
-                        img.src = `http://${localPcIp}/api/shutdown?t=` + Date.now();
-                    } 
-                    else if (data.action === "wake_wol") {
-                        console.log("📡 [LOG] ¡Aviso! El puente local disparó la señal de encendido (Wake on LAN) en la red.");
-                        const img = new Image();
-                        img.src = `http://${localPcIp}/api/wol?t=` + Date.now();
-                    }
-                } catch (e) {
-                    console.error("Error procesando relay:", e);
-                }
-            };
-
-            relaySocket.onclose = function() {
-                bridgeStatus.innerText = "📱 PUENTE: DESCONECTADO";
-                bridgeStatus.style.background = "rgba(239, 68, 68, 0.3)";
-                setTimeout(() => { location.reload(); }, 5000);
-            };
-            // --------------------------------------------------------------------------
 
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -653,34 +590,15 @@ async def procesar(payload: PromptRequest, request: Request):
     if any(cmd in texto_lower for cmd in ["prende la pc", "encender la pc", "prender la pc", "enciende la pc"]):
         if state.pc_status == "online":
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
-        elif state.relay_ws is not None:
-            try:
-                print("📡 [LOG] Forzando orden de encendido a través del iPhone 7 puente...")
-                await state.relay_ws.send_text(json.dumps({"action": "wake_wol"}))
-                state.pc_status = "waking"
-                respuesta_texto = "Orden de encendido enviada al iPhone 7 puente en la red local..."
-            except Exception as e:
-                print(f"⚠️ Error enviando al relay: {e}")
-                respuesta_texto = "Error de comunicación con el puente local."
         else:
-            respuesta_texto = "El iPhone 7 puente no se encuentra conectado al sistema en este momento, señor."
+            state.accion_pendiente = "wake_wol"
+            state.pc_status = "waking"
+            respuesta_texto = "Orden de encendido enviada al puente local del iPhone 7..."
 
     # COMANDO: APAGAR PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
-        if state.relay_ws is not None:
-            try:
-                print("🖥️ [LOG] Ordenando al iPhone 7 puente ejecutar apagado seguro...")
-                await state.relay_ws.send_text(json.dumps({"action": "shutdown_pc"}))
-                respuesta_texto = "Enviando orden de apagado seguro al iPhone 7 puente..."
-            except Exception as e:
-                print(f"⚠️ Error enviando apagado al relay: {e}")
-                respuesta_texto = "Error al comunicar con el puente local."
-        elif state.pc_agent_ws and state.pc_status == "online":
-            print("🖥️ [LOG] Ordenando apagado a la PC mediante agente WebSocket...")
-            await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
-            respuesta_texto = "Enviando orden de apagado seguro a la PC..."
-        else:
-            respuesta_texto = "El puente local o la PC no se encuentran conectados."
+        state.accion_pendiente = "shutdown_pc"
+        respuesta_texto = "Enviando orden de apagado seguro al puente local del iPhone 7..."
 
     # CONSULTAS GENERALES / CLIMA
     else:
@@ -764,16 +682,3 @@ async def websocket_agent(websocket: WebSocket):
     except WebSocketDisconnect:
         state.pc_agent_ws = None
         state.pc_status = "offline"
-
-
-@app.websocket("/ws/relay")
-async def websocket_relay(websocket: WebSocket):
-    await websocket.accept()
-    state.relay_ws = websocket
-    print("📱 iPhone 7 (Puente local) conectado exitosamente.")
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        print("📱 iPhone 7 desconectado.")
-        state.relay_ws = None
