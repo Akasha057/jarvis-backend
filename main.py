@@ -1,13 +1,14 @@
+import base64
+import itertools
 import json
 import os
 import socket
-import base64
 import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-# Importación del nuevo SDK oficial
+# Importación del SDK oficial de Google GenAI
 from google import genai
 from google.genai import types
 
@@ -21,6 +22,26 @@ WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
+
+# ---------------------------------------------------------
+# SISTEMA DE ROTACIÓN DE API KEYS (10 KEYS)
+# ---------------------------------------------------------
+# Lee la variable que contiene las 10 claves separadas por coma
+raw_keys_env = os.environ.get("GEMINI_API_KEY", "")
+
+# Limpia y convierte la cadena en una lista de claves individuales
+API_KEYS_LIST = [k.strip().strip('"').strip("'") for k in raw_keys_env.split(",") if k.strip()]
+
+# Iterador cíclico para alternar de clave en cada petición
+key_cycle = itertools.cycle(API_KEYS_LIST) if API_KEYS_LIST else None
+
+
+def obtener_siguiente_api_key() -> str | None:
+    """Retorna la siguiente clave de la lista de 10 claves disponible."""
+    if not key_cycle:
+        return None
+    return next(key_cycle)
+
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -78,28 +99,26 @@ def enviar_magic_packet():
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """
-    Genera la respuesta usando Gemini Flash (3.7 / 3.6).
-    Usa client.chats.create() para evitar advertencias de AFC
-    y valida la API Key para solucionar el error 401.
+    Genera la respuesta usando gemini-3.6-flash rotando individualmente 
+    entre las 10 API Keys configuradas.
     """
-    try:
-        api_key = os.environ.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-        
-        if not api_key:
-            print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
-            return "Disculpe, señor. La clave de API de Gemini no está configurada."
+    current_key = obtener_siguiente_api_key()
+    
+    if not current_key:
+        print("⚠️ GEMINI_API_KEY no encontrada o vacía en las variables de entorno.")
+        return "Disculpe, señor. Las claves de API de Gemini no están configuradas."
 
-        # Cliente con la API Key explícita
-        client = genai.Client(api_key=api_key)
+    try:
+        # Inicializa el cliente con la clave individual del turno actual
+        client = genai.Client(api_key=current_key)
 
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
             "Responde de manera concisa y clara."
         )
 
-        # Uso de chat para AFC nativo y limpio
         chat = client.chats.create(
-            model="gemini-3.7-flash",
+            model="gemini-3.6-flash",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction
             )
@@ -109,8 +128,9 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return response.text
 
     except Exception as e:
-        print(f"⚠️ Error al llamar a Gemini Flash: {e}")
+        print(f"⚠️ Error al llamar a Gemini Flash (Key finalizada en ...{current_key[-6:]}): {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
+
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
@@ -527,7 +547,7 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini
+    # Conversación general con Gemini 3.6 Flash
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
