@@ -98,7 +98,7 @@ def enviar_magic_packet():
 
 
 def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
-    """Llamada síncrona aislada para evitar bloqueos del servidor."""
+    """Llamada síncrona aislada utilizando únicamente el modelo indicado y desactivando el warning de AFC."""
     client = genai.Client(
         api_key=key,
         http_options=types.HttpOptions(api_version="v1beta")
@@ -114,7 +114,8 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
         contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
-            tools=[]
+            tools=[],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
         )
     )
 
@@ -124,7 +125,7 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Intenta generar respuesta rotando claves de API Keys y modelos compatibles (3.7 y 3.6)."""
+    """Intenta generar respuesta rotando claves usando únicamente gemini-3.6-flash."""
     global key_index
     keys = obtener_lista_api_keys()
     
@@ -133,28 +134,27 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
-    # Modelos estrictamente configurados para versiones 3.7 y 3.6 Flash
-    modelos_a_probar = ["gemini-3.7-flash", "gemini-3.6-flash"]
+    # Modelo único especificado
+    modelo_unico = "gemini-3.6-flash"
 
     for intento in range(total_keys):
         current_key = keys[(key_index + intento) % total_keys]
         
-        for modelo in modelos_a_probar:
-            try:
-                future = executor.submit(_llamar_gemini_sync, current_key, prompt, client_ip, modelo)
-                resultado = future.result(timeout=8)
+        try:
+            future = executor.submit(_llamar_gemini_sync, current_key, prompt, client_ip, modelo_unico)
+            resultado = future.result(timeout=8)
 
-                if resultado:
-                    key_index = (key_index + intento + 1) % total_keys
-                    return resultado
+            if resultado:
+                key_index = (key_index + intento + 1) % total_keys
+                return resultado
 
-            except TimeoutError:
-                print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo}")
-            except Exception as e:
-                print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo}: {e}")
-                # Si la clave no está autenticada (401), se omite inmediatamente la iteración para esta clave
-                if "401" in str(e) or "UNAUTHENTICATED" in str(e):
-                    break
+        except TimeoutError:
+            print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo_unico}")
+        except Exception as e:
+            print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo_unico}: {e}")
+            # Si la clave es inválida (401), salta inmediatamente a la siguiente key
+            if "401" in str(e) or "UNAUTHENTICATED" in str(e):
+                continue
 
     return "Disculpe, señor. Ocurrió un error o tiempo de espera agotado al conectar con el sistema Gemini."
 
@@ -207,7 +207,6 @@ def read_root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. Control System</title>
-        <!-- Favicon SVG dinámico incrustado -->
         <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23050a14' stroke='%2300f0ff' stroke-width='6'/><circle cx='50' cy='50' r='20' fill='%23ffffff'/><circle cx='50' cy='50' r='20' fill='%2300f0ff' opacity='0.7'/></svg>">
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
