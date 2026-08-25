@@ -83,14 +83,15 @@ def enviar_magic_packet():
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """Genera la respuesta usando Gemini Flash."""
     try:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
-            return "Error: GEMINI_API_KEY no está configurada en las variables de entorno."
+            print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
+            return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Configuración directa previa a la llamada
+        # Re-configurar la API key explícitamente antes de instanciar el modelo
         genai.configure(api_key=api_key)
 
-        model = genai.GenerativeModel("gemini-3.6-flash") # Asegúrate de usar un modelo soportado (ej. gemini-2.0-flash)
+        model = genai.GenerativeModel("gemini-3.6-flash")
         
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
