@@ -1,12 +1,6 @@
 fastapi
 uvicorn
 pydantic
-google-genai
-google-auth
-google-api-python-client
-pydub
-elevenlabs
-audioop-lts
 requests
-pydantic
-google-generativeai
+google-genai
+elevenlabs
