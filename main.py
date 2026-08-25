@@ -214,7 +214,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con sondeo automático de estado."""
+    """Retorna la interfaz web de JARVIS con sondeo automático de estado y botón de TeamViewer."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -287,6 +287,29 @@ def read_root():
             .status-offline { color: #ff4d4d; border-color: #ff4d4d; }
             .status-waking { color: #ffaa00; border-color: #ffaa00; }
             .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
+            
+            .remote-access-bar {
+                margin: 10px 0;
+            }
+            .btn-remote {
+                background: rgba(37, 99, 235, 0.2);
+                border-color: #2563eb;
+                color: #60a5fa;
+                text-decoration: none;
+                display: inline-block;
+                padding: 6px 16px;
+                border-radius: 4px;
+                font-family: 'Orbitron', sans-serif;
+                font-size: 0.85rem;
+                font-weight: 600;
+                transition: all 0.2s;
+            }
+            .btn-remote:hover {
+                background: #2563eb;
+                color: #fff;
+                box-shadow: 0 0 10px rgba(37, 99, 235, 0.6);
+            }
+
             .main-panel {
                 width: 100%; max-width: 800px; background: var(--panel-bg);
                 border: 1px solid var(--border-color); box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
@@ -326,6 +349,9 @@ def read_root():
                 <div class="arc-reactor" id="arcReactor"><div class="core"></div></div>
             </div>
             <div>PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span></div>
+            <div class="remote-access-bar">
+                <a href="teamviewer://" class="btn-remote" target="_blank">🖥️ ABRIR TEAMVIEWER</a>
+            </div>
         </header>
 
         <main class="main-panel">
@@ -475,7 +501,7 @@ def procesar(payload: PromptRequest, request: Request):
             loop.close()
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
-            respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
+            respuesta_texto = "La PC não está conectada o ya se encuentra apagada."
 
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
