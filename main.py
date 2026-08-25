@@ -35,7 +35,7 @@ class AppState:
 
 state = AppState()
 
-# Puntero global para la rotación de claves
+# Puntero global para rotación de claves
 key_index = 0
 
 # ---------------------------------------------------------
@@ -48,20 +48,13 @@ class PromptRequest(BaseModel):
 # FUNCIONES AUXILIARES
 # ---------------------------------------------------------
 def obtener_lista_api_keys() -> list[str]:
-    """
-    Carga de forma dinámica todas las claves definidas bajo las variables:
-    GEMINI_API_KEY_1, GEMINI_API_KEY_2, ..., GEMINI_API_KEY_10.
-    Si no encuentra variables numeradas, recurre a GEMINI_API_KEY.
-    """
+    """Carga todas las claves individuales GEMINI_API_KEY_1..10 o GEMINI_API_KEY."""
     keys = []
-    
-    # 1. Busca variables numeradas individuales
     for i in range(1, 11):
         key = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
         if key:
             keys.append(key)
             
-    # 2. Respaldo por si se usa una sola variable separada por comas
     if not keys:
         raw_keys = os.environ.get("GEMINI_API_KEY", "")
         keys = [k.strip().strip('"').strip("'") for k in raw_keys.split(",") if k.strip()]
@@ -103,62 +96,59 @@ def enviar_magic_packet():
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """
-    Intenta generar la respuesta usando gemini-3.7-flash probando las API Keys una por una.
-    Conmuta automáticamente si una clave falla o devuelve una respuesta vacía.
+    Intenta generar respuesta probando la lista de API Keys una por una.
+    Conmuta a gemini-3.6-flash si gemini-3.7-flash no está habilitado en la clave.
     """
     global key_index
     keys = obtener_lista_api_keys()
     
     if not keys:
-        print("⚠️ No se encontraron claves de Gemini en las variables de entorno.")
-        return "Disculpe, señor. Las claves de API de Gemini no están configuradas."
+        print("⚠️ No se encontraron claves de Gemini en variables de entorno.")
+        return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
-    
+    modelos_a_probar = ["gemini-3.7-flash", "gemini-3.6-flash"]
+
     for intento in range(total_keys):
         current_key = keys[(key_index + intento) % total_keys]
         
         try:
-            client = genai.Client(api_key=current_key)
+            # Forzamos HttpOptions para asegurar llamada mediante API Key sin colgar el cliente
+            client = genai.Client(
+                api_key=current_key,
+                http_options=types.HttpOptions(api_version="v1beta")
+            )
 
             system_instruction = (
                 "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
                 "Responde de manera concisa y clara."
             )
 
-            # Usamos generate_content directamente para asegurar compatibilidad estricta
-            response = client.models.generate_content(
-                model="gemini-3.7-flash",
-                contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction
-                )
-            )
-
-            # Extracción segura del texto resultante
-            texto_respuesta = getattr(response, "text", None)
-            
-            if not texto_respuesta and response.candidates:
-                # Intento de extracción por partes en caso de respuestas estructuradas
+            for modelo in modelos_a_probar:
                 try:
-                    texto_respuesta = response.candidates[0].content.parts[0].text
-                except Exception:
-                    pass
+                    response = client.models.generate_content(
+                        model=modelo,
+                        contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction
+                        )
+                    )
 
-            if texto_respuesta and texto_respuesta.strip():
-                # Éxito: avanzamos la clave para la próxima petición y retornamos
-                key_index = (key_index + intento + 1) % total_keys
-                return texto_respuesta.strip()
-            else:
-                print(f"⚠️ La Key ...{current_key[-6:]} devolvió una respuesta vacía o fue filtrada.")
+                    if response and response.text and response.text.strip():
+                        key_index = (key_index + intento + 1) % total_keys
+                        return response.text.strip()
+                except Exception as inner_e:
+                    print(f"⚠️ Modelo {modelo} falló con key ...{current_key[-6:]}: {inner_e}")
+                    continue
 
         except Exception as e:
-            print(f"⚠️ Error al llamar a Gemini con Key ...{current_key[-6:]} (intento {intento + 1}/{total_keys}): {e}")
+            print(f"⚠️ Error inicializando cliente con Key ...{current_key[-6:]}: {e}")
 
-    return "Disculpe, señor. Ocurrió un error o la respuesta no pudo ser generada por el sistema Gemini."
+    return "Disculpe, señor. No fue posible establecer comunicación con el núcleo de Gemini."
+
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
-    """Sintetiza texto a voz utilizando ElevenLabs."""
+    """Sintetiza texto a voz utilizando ElevenLabs con timeout estricto."""
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
         print("⚠️ Credenciales de ElevenLabs no configuradas.")
         return None
@@ -179,12 +169,13 @@ def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     }
 
     try:
-        res = requests.post(url, json=data, headers=headers, timeout=10)
+        # Timeout de 5s para evitar que bloquee la respuesta en la web si ElevenLabs no responde
+        res = requests.post(url, json=data, headers=headers, timeout=5)
         if res.status_code == 200:
             return res.content
         print(f"⚠️ Error ElevenLabs status code: {res.status_code}")
     except Exception as e:
-        print(f"⚠️ Error en ElevenLabs: {e}")
+        print(f"⚠️ Error o timeout en ElevenLabs: {e}")
     
     return None
 
@@ -201,11 +192,9 @@ def read_root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. Control System</title>
-
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;700&display=swap" rel="stylesheet">
-
         <style>
             :root {
                 --cyan-glow: #00f0ff;
@@ -214,13 +203,7 @@ def read_root():
                 --panel-bg: rgba(8, 20, 38, 0.7);
                 --border-color: rgba(0, 240, 255, 0.3);
             }
-
-            * {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }
-
+            * { box-sizing: border-box; margin: 0; padding: 0; }
             body {
                 background-color: var(--bg-dark);
                 color: #e0f7fc;
@@ -237,14 +220,7 @@ def read_root():
                     linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
                 background-size: 100% 100%, 30px 30px, 30px 30px;
             }
-
-            header {
-                text-align: center;
-                margin-bottom: 20px;
-                width: 100%;
-                max-width: 800px;
-            }
-
+            header { text-align: center; margin-bottom: 20px; width: 100%; max-width: 800px; }
             h1 {
                 font-family: 'Orbitron', sans-serif;
                 font-size: 2.2rem;
@@ -252,179 +228,73 @@ def read_root():
                 color: var(--cyan-glow);
                 text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
             }
-
-            .arc-container {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                margin: 15px 0;
-            }
-
+            .arc-container { display: flex; justify-content: center; align-items: center; margin: 15px 0; }
             .arc-reactor {
                 position: relative;
-                width: 120px;
-                height: 120px;
+                width: 120px; height: 120px;
                 border-radius: 50%;
                 border: 2px solid var(--border-color);
                 box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
-                display: flex;
-                justify-content: center;
-                align-items: center;
+                display: flex; justify-content: center; align-items: center;
             }
-
             .core {
-                width: 50px;
-                height: 50px;
-                border-radius: 50%;
+                width: 50px; height: 50px; border-radius: 50%;
                 background: radial-gradient(circle, #ffffff 0%, var(--cyan-glow) 60%, var(--cyan-dim) 100%);
                 box-shadow: 0 0 25px var(--cyan-glow), 0 0 50px var(--cyan-glow);
                 transition: all 0.3s ease;
             }
-
-            .arc-reactor.speaking .core {
-                animation: pulse-speaking 0.8s infinite alternate;
-            }
-
+            .arc-reactor.speaking .core { animation: pulse-speaking 0.8s infinite alternate; }
             @keyframes pulse-speaking {
                 0% { transform: scale(0.9); box-shadow: 0 0 15px var(--cyan-glow); }
                 100% { transform: scale(1.25); box-shadow: 0 0 40px var(--cyan-glow), 0 0 70px var(--cyan-glow); }
             }
-
             .status-badge {
-                display: inline-block;
-                padding: 6px 16px;
-                border-radius: 20px;
-                font-family: 'Orbitron', sans-serif;
-                font-size: 0.85rem;
-                letter-spacing: 1px;
-                border: 1px solid var(--border-color);
-                background: rgba(0, 0, 0, 0.4);
-                margin-top: 10px;
+                display: inline-block; padding: 6px 16px; border-radius: 20px;
+                font-family: 'Orbitron', sans-serif; font-size: 0.85rem; letter-spacing: 1px;
+                border: 1px solid var(--border-color); background: rgba(0, 0, 0, 0.4); margin-top: 10px;
             }
-
             .status-offline { color: #ff4d4d; border-color: #ff4d4d; }
             .status-waking { color: #ffaa00; border-color: #ffaa00; }
             .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
-
             .main-panel {
-                width: 100%;
-                max-width: 800px;
-                background: var(--panel-bg);
-                border: 1px solid var(--border-color);
-                box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
-                backdrop-filter: blur(8px);
-                border-radius: 8px;
-                padding: 20px;
-                display: flex;
-                flex-direction: column;
-                height: 500px;
+                width: 100%; max-width: 800px; background: var(--panel-bg);
+                border: 1px solid var(--border-color); box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+                backdrop-filter: blur(8px); border-radius: 8px; padding: 20px;
+                display: flex; flex-direction: column; height: 500px;
             }
-
             .chat-log {
-                flex: 1;
-                overflow-y: auto;
-                padding-right: 10px;
-                display: flex;
-                flex-direction: column;
-                gap: 12px;
-                margin-bottom: 15px;
+                flex: 1; overflow-y: auto; padding-right: 10px;
+                display: flex; flex-direction: column; gap: 12px; margin-bottom: 15px;
             }
-
-            .chat-log::-webkit-scrollbar {
-                width: 6px;
-            }
-            .chat-log::-webkit-scrollbar-thumb {
-                background: var(--cyan-dim);
-                border-radius: 3px;
-            }
-
-            .msg {
-                max-width: 80%;
-                padding: 10px 14px;
-                border-radius: 6px;
-                font-size: 1.05rem;
-                line-height: 1.4;
-            }
-
-            .msg.user {
-                align-self: flex-end;
-                background: rgba(0, 240, 255, 0.15);
-                border: 1px solid rgba(0, 240, 255, 0.4);
-                color: #ffffff;
-            }
-
-            .msg.jarvis {
-                align-self: flex-start;
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                color: #e0f7fc;
-            }
-
-            .controls {
-                display: flex;
-                gap: 10px;
-            }
-
+            .chat-log::-webkit-scrollbar { width: 6px; }
+            .chat-log::-webkit-scrollbar-thumb { background: var(--cyan-dim); border-radius: 3px; }
+            .msg { max-width: 80%; padding: 10px 14px; border-radius: 6px; font-size: 1.05rem; line-height: 1.4; }
+            .msg.user { align-self: flex-end; background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: #ffffff; }
+            .msg.jarvis { align-self: flex-start; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); color: #e0f7fc; }
+            .controls { display: flex; gap: 10px; }
             input[type="text"] {
-                flex: 1;
-                background: rgba(0, 0, 0, 0.5);
-                border: 1px solid var(--border-color);
-                padding: 12px 16px;
-                border-radius: 4px;
-                color: #fff;
-                font-family: 'Rajdhani', sans-serif;
-                font-size: 1.1rem;
-                outline: none;
+                flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--border-color);
+                padding: 12px 16px; border-radius: 4px; color: #fff;
+                font-family: 'Rajdhani', sans-serif; font-size: 1.1rem; outline: none;
             }
-
-            input[type="text"]:focus {
-                border-color: var(--cyan-glow);
-                box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
-            }
-
+            input[type="text"]:focus { border-color: var(--cyan-glow); box-shadow: 0 0 8px rgba(0, 240, 255, 0.4); }
             button {
-                background: rgba(0, 240, 255, 0.1);
-                border: 1px solid var(--cyan-glow);
-                color: var(--cyan-glow);
-                font-family: 'Orbitron', sans-serif;
-                padding: 0 20px;
-                border-radius: 4px;
-                cursor: pointer;
-                transition: all 0.2s;
-                font-weight: 600;
+                background: rgba(0, 240, 255, 0.1); border: 1px solid var(--cyan-glow);
+                color: var(--cyan-glow); font-family: 'Orbitron', sans-serif;
+                padding: 0 20px; border-radius: 4px; cursor: pointer; transition: all 0.2s; font-weight: 600;
             }
-
-            button:hover {
-                background: var(--cyan-glow);
-                color: #000;
-                box-shadow: 0 0 12px var(--cyan-glow);
-            }
-
-            .btn-mic.recording {
-                background: #ff4d4d;
-                border-color: #ff4d4d;
-                color: #fff;
-                animation: pulse-red 1s infinite alternate;
-            }
-
-            @keyframes pulse-red {
-                0% { box-shadow: 0 0 5px #ff4d4d; }
-                100% { box-shadow: 0 0 15px #ff4d4d; }
-            }
+            button:hover { background: var(--cyan-glow); color: #000; box-shadow: 0 0 12px var(--cyan-glow); }
+            .btn-mic.recording { background: #ff4d4d; border-color: #ff4d4d; color: #fff; animation: pulse-red 1s infinite alternate; }
+            @keyframes pulse-red { 0% { box-shadow: 0 0 5px #ff4d4d; } 100% { box-shadow: 0 0 15px #ff4d4d; } }
         </style>
     </head>
     <body>
-
         <header>
             <h1>J.A.R.V.I.S.</h1>
             <div class="arc-container">
-                <div class="arc-reactor" id="arcReactor">
-                    <div class="core"></div>
-                </div>
+                <div class="arc-reactor" id="arcReactor"><div class="core"></div></div>
             </div>
-            <div>
-                PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span>
-            </div>
+            <div>PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span></div>
         </header>
 
         <main class="main-panel">
@@ -458,33 +328,19 @@ def read_root():
                 recognition.interimResults = false;
 
                 recognition.onresult = (event) => {
-                    const text = event.results[0][0].transcript;
-                    userInput.value = text;
+                    userInput.value = event.results[0][0].transcript;
                     enviarMensaje();
                 };
-
-                recognition.onend = () => {
-                    isRecording = false;
-                    btnMic.classList.remove("recording");
-                };
-
-                recognition.onerror = () => {
-                    isRecording = false;
-                    btnMic.classList.remove("recording");
-                };
+                recognition.onend = () => { isRecording = false; btnMic.classList.remove("recording"); };
+                recognition.onerror = () => { isRecording = false; btnMic.classList.remove("recording"); };
             } else {
                 btnMic.style.display = "none";
             }
 
             function toggleMic() {
                 if (!recognition) return;
-                if (isRecording) {
-                    recognition.stop();
-                } else {
-                    recognition.start();
-                    isRecording = true;
-                    btnMic.classList.add("recording");
-                }
+                if (isRecording) { recognition.stop(); } 
+                else { recognition.start(); isRecording = true; btnMic.classList.add("recording"); }
             }
 
             function actualizarEstadoUI(status) {
@@ -502,12 +358,11 @@ def read_root():
             }
 
             function reproducirAudioBase64(base64Audio) {
+                if (!base64Audio) return;
                 const audio = new Audio("data:audio/mp3;base64," + base64Audio);
                 arcReactor.classList.add("speaking");
-                audio.play();
-                audio.onended = () => {
-                    arcReactor.classList.remove("speaking");
-                };
+                audio.play().catch(e => console.log("Audio autostart blocked", e));
+                audio.onended = () => arcReactor.classList.remove("speaking");
             }
 
             async function enviarMensaje() {
@@ -525,21 +380,12 @@ def read_root():
                     });
 
                     const data = await response.json();
-
-                    if (data.respuesta) {
-                        agregarMensaje(data.respuesta, "jarvis");
-                    }
-
-                    if (data.audio_b64) {
-                        reproducirAudioBase64(data.audio_b64);
-                    }
-
-                    if (data.pc_status) {
-                        actualizarEstadoUI(data.pc_status);
-                    }
+                    if (data.respuesta) { agregarMensaje(data.respuesta, "jarvis"); }
+                    if (data.audio_b64) { reproducirAudioBase64(data.audio_b64); }
+                    if (data.pc_status) { actualizarEstadoUI(data.pc_status); }
 
                 } catch (err) {
-                    agregarMensaje("Error al conectar con el servidor de JARVIS.", "jarvis");
+                    agregarMensaje("Error de red al conectar con el servidor.", "jarvis");
                 }
             }
         </script>
@@ -572,7 +418,7 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini 3.7 Flash
+    # Conversación general con Gemini
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
@@ -589,7 +435,6 @@ async def procesar(payload: PromptRequest, request: Request):
 
 @app.websocket("/ws/agent")
 async def websocket_agent(websocket: WebSocket):
-    """WebSocket utilizado por el agente que corre en la PC local para reportar estado."""
     await websocket.accept()
     state.pc_agent_ws = websocket
     state.pc_status = "online"
