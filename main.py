@@ -33,6 +33,7 @@ class AppState:
     def __init__(self):
         self.pc_status = "offline"  # offline, waking, online
         self.pc_agent_ws: WebSocket | None = None
+        self.relay_ws: WebSocket | None = None  # WebSocket del iPhone 7 (Puente local)
 
 state = AppState()
 key_index = 0
@@ -62,7 +63,7 @@ def obtener_lista_api_keys() -> list[str]:
 
 
 def enviar_magic_packet():
-    """Actualiza la IP pública en DuckDNS y manda el paquete WoL UDP directo al router."""
+    """Fallback: Actualiza la IP pública en DuckDNS y manda el paquete WoL UDP directo al router."""
     if not DUCKDNS_TOKEN or not DUCKDNS_DOMAIN or not TARGET_MAC:
         print("⚠️ Faltan credenciales o la MAC en las variables de entorno.")
         return
@@ -131,7 +132,6 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
         except (KeyError, IndexError):
             return None
     else:
-        # Lanza excepción para ser capturada por el bloque de rotación de claves
         raise Exception(f"{res.status_code} {res.text}")
         
     return None
@@ -430,9 +430,26 @@ def procesar(payload: PromptRequest, request: Request):
     respuesta_texto = ""
 
     # Lógica de encendido de PC
-    if any(cmd in texto_lower for cmd in ["prende la pc", "encender la pc", "prender la pc"]):
+    if any(cmd in texto_lower for cmd in ["prende la pc", "encender la pc", "prender la pc", "enciende la pc"]):
         if state.pc_status == "online":
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
+        
+        # Opción A: Mandar orden al iPhone 7 vía WebSocket (Puente Local)
+        elif state.relay_ws is not None:
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(state.relay_ws.send_text(json.dumps({"action": "wake_wol"})))
+                loop.close()
+                state.pc_status = "waking"
+                respuesta_texto = "Orden enviada al iPhone 7 puente. Activando Magic Packet en la red local..."
+            except Exception as e:
+                print(f"⚠️ Error al comunicar con el relay: {e}")
+                enviar_magic_packet()
+                state.pc_status = "waking"
+                respuesta_texto = "Enviando orden de encendido por paquete WoL tradicional..."
+        
+        # Opción B: Fallback directo mediante DuckDNS
         else:
             enviar_magic_packet()
             state.pc_status = "waking"
@@ -479,3 +496,19 @@ async def websocket_agent(websocket: WebSocket):
         print("🔌 Agente PC desconectado.")
         state.pc_agent_ws = None
         state.pc_status = "offline"
+
+
+@app.websocket("/ws/relay")
+async def websocket_relay(websocket: WebSocket):
+    """Endpoint al que se conecta el iPhone 7 (Puente local WoL) permanentemente."""
+    await websocket.accept()
+    state.relay_ws = websocket
+    print("📱 iPhone 7 (Puente local WoL) conectado y escuchando.")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            print(f"📩 Mensaje del iPhone 7: {data}")
+    except WebSocketDisconnect:
+        print("📱 iPhone 7 desconectado.")
+        state.relay_ws = None
