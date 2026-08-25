@@ -22,6 +22,9 @@ WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
+# Versión del sistema para el Heartbeat del puente local
+APP_VERSION = "2026.08.25-01"
+
 # Instancia de FastAPI
 app = FastAPI()
 
@@ -145,7 +148,7 @@ def generar_respuesta_con_flash(prompt_con_contexto: str) -> str:
     keys = obtener_lista_api_keys()
     
     if not keys:
-        return "Disculpe, señor. Las claves de API de Gemini não estão configuradas en Render."
+        return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
     modelo_unico = "gemini-3.6-flash"
@@ -208,6 +211,12 @@ def favicon():
     return Response(status_code=204)
 
 
+@app.get("/version")
+def obtener_version():
+    """Devuelve la versión actual del código para el control de actualización remota (Heartbeat)."""
+    return {"version": APP_VERSION}
+
+
 @app.get("/estado")
 def obtener_estado():
     """Endpoint que devuelve el estado actual de la PC para la UI web."""
@@ -216,7 +225,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con geolocalización GPS y control de puente local seguro."""
+    """Retorna la interfaz web de JARVIS con geolocalización GPS, control de puente local y autoevaluación."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -402,6 +411,7 @@ def read_root():
             let isRecording = false;
             let userLat = null;
             let userLon = null;
+            let currentAppVersion = null;
 
             const chatLog = document.getElementById("chatLog");
             const userInput = document.getElementById("userInput");
@@ -410,23 +420,43 @@ def read_root():
             const btnMic = document.getElementById("btnMic");
             const bridgeStatus = document.getElementById("bridgeStatus");
 
-            // --- GESTIÓN PRIVADA Y SEGURA DE LA IP LOCAL EN EL DISPOSITIVO ---
+            // --- SISTEMA DE HEARTBEAT Y ACTUALIZACIÓN REMOTA AUTOMÁTICA ---
+            async function verificarActualizacionRemota() {
+                try {
+                    const response = await fetch("/version");
+                    const data = await response.json();
+                    
+                    if (data.version) {
+                        if (currentAppVersion === null) {
+                            currentAppVersion = data.version;
+                        } else if (currentAppVersion !== data.version) {
+                            console.log("🔄 Nueva versión detectada en el servidor. Actualizando puente local...");
+                            location.reload();
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error al verificar actualización del sistema:", err);
+                }
+            }
+            setInterval(verificarActualizacionRemota, 60000);
+            // -------------------------------------------------------------
+
+            // --- GESTIÓN DE LA IP LOCAL DE LA PC (LIMPIA DE EJEMPLOS) ---
             let localPcIp = localStorage.getItem("jarvis_local_pc_ip");
 
             function cambiarIpLocal() {
-                const nuevaIp = prompt("Ingrese la IP local privada de su PC (ej: 192.168.1.37):", localPcIp || "");
+                const nuevaIp = prompt("Ingrese la IP local privada de su PC:", localPcIp || "");
                 if (nuevaIp && nuevaIp.trim() !== "") {
                     localPcIp = nuevaIp.trim();
                     localStorage.setItem("jarvis_local_pc_ip", localPcIp);
-                    alert("IP local actualizada de forma segura en este dispositivo: " + localPcIp);
+                    alert("IP local actualizada correctamente.");
                 }
             }
 
-            // Si es la primera vez que se abre en este dispositivo (ej. iPhone 7), la solicita discretamente
             if (!localPcIp) {
                 setTimeout(() => { cambiarIpLocal(); }, 1000);
             }
-            // -----------------------------------------------------------------
+            // -----------------------------------------------------------
 
             // Geolocalización GPS del navegador
             if (navigator.geolocation) {
@@ -463,13 +493,11 @@ def read_root():
                     }
 
                     if (data.action === "shutdown_pc") {
-                        // Envía comando de apagado local utilizando la IP almacenada de forma privada
                         fetch(`http://${localPcIp}/api/shutdown`, { method: "POST", mode: "no-cors" })
                             .then(() => console.log("Orden de apagado local disparada."))
                             .catch(err => console.error("Error al disparar apagado local:", err));
                     } 
                     else if (data.action === "wake_wol") {
-                        // Envía comando de encendido WoL local
                         fetch(`http://${localPcIp}/api/wol`, { method: "POST", mode: "no-cors" })
                             .then(() => console.log("Señal WoL local disparada."))
                             .catch(err => console.error("Error al disparar WoL local:", err));
@@ -482,7 +510,7 @@ def read_root():
             relaySocket.onclose = function() {
                 bridgeStatus.innerText = "📱 PUENTE: DESCONECTADO";
                 bridgeStatus.style.background = "rgba(239, 68, 68, 0.3)";
-                setTimeout(() => { location.reload(); }, 5000); // Reconexión automática
+                setTimeout(() => { location.reload(); }, 5000);
             };
             // --------------------------------------------------------------------------
 
