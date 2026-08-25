@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import base64
 import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -82,7 +83,7 @@ def enviar_magic_packet():
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """Genera la respuesta usando Gemini Flash."""
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-3.6-flash")
         
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
@@ -142,7 +143,7 @@ def read_root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. Control System</title>
 
-        <!-- Google Fonts: Orbitron y Rajdhani para estética Futuristic/HUD -->
+        <!-- Google Fonts: Orbitron y Rajdhani -->
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;700&display=swap" rel="stylesheet">
@@ -194,7 +195,6 @@ def read_root():
                 text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
             }
 
-            /* Contenedor Arc Reactor */
             .arc-container {
                 display: flex;
                 justify-content: center;
@@ -232,7 +232,6 @@ def read_root():
                 100% { transform: scale(1.25); box-shadow: 0 0 40px var(--cyan-glow), 0 0 70px var(--cyan-glow); }
             }
 
-            /* Indicador de Estado */
             .status-badge {
                 display: inline-block;
                 padding: 6px 16px;
@@ -249,7 +248,6 @@ def read_root():
             .status-waking { color: #ffaa00; border-color: #ffaa00; }
             .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
 
-            /* Panel Principal */
             .main-panel {
                 width: 100%;
                 max-width: 800px;
@@ -264,7 +262,6 @@ def read_root():
                 height: 500px;
             }
 
-            /* Chat Log */
             .chat-log {
                 flex: 1;
                 overflow-y: auto;
@@ -305,7 +302,6 @@ def read_root():
                 color: #e0f7fc;
             }
 
-            /* Controls */
             .controls {
                 display: flex;
                 gap: 10px;
@@ -344,10 +340,6 @@ def read_root():
                 background: var(--cyan-glow);
                 color: #000;
                 box-shadow: 0 0 12px var(--cyan-glow);
-            }
-
-            .btn-mic {
-                padding: 0 15px;
             }
 
             .btn-mic.recording {
@@ -400,7 +392,6 @@ def read_root():
             const arcReactor = document.getElementById("arcReactor");
             const btnMic = document.getElementById("btnMic");
 
-            // Configuración de Reconocimiento de Voz (Web Speech API)
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 recognition = new SpeechRecognition();
@@ -452,6 +443,15 @@ def read_root():
                 chatLog.scrollTop = chatLog.scrollHeight;
             }
 
+            function reproducirAudioBase64(base64Audio) {
+                const audio = new Audio("data:audio/mp3;base64," + base64Audio);
+                arcReactor.classList.add("speaking");
+                audio.play();
+                audio.onended = () => {
+                    arcReactor.classList.remove("speaking");
+                };
+            }
+
             async function enviarMensaje() {
                 const text = userInput.value.trim();
                 if (!text) return;
@@ -472,6 +472,10 @@ def read_root():
                         agregarMensaje(data.respuesta, "jarvis");
                     }
 
+                    if (data.audio_b64) {
+                        reproducirAudioBase64(data.audio_b64);
+                    }
+
                     if (data.pc_status) {
                         actualizarEstadoUI(data.pc_status);
                     }
@@ -481,7 +485,6 @@ def read_root():
                 }
             }
 
-            // Consultar el estado inicial al cargar
             fetch("/")
                 .then(res => res.json())
                 .then(data => {
@@ -518,18 +521,19 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini Flash
+    # Conversación general
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
 
-    # Convertir respuesta a audio (opcional)
+    # Convertir respuesta a audio y codificar en base64 para el reproductor web
     audio_bytes = texto_a_voz_elevenlabs(respuesta_texto)
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
 
     return {
         "respuesta": respuesta_texto,
         "pc_status": state.pc_status,
-        "audio_disponible": audio_bytes is not None
+        "audio_b64": audio_b64
     }
 
 
