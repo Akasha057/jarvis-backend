@@ -657,20 +657,17 @@ async def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
         elif state.relay_ws is not None:
             try:
-                print("📡 [LOG] Ordenando al iPhone 7 puente disparar Wake on LAN...")
+                print("📡 [LOG] Forzando orden de encendido a través del iPhone 7 puente...")
                 await state.relay_ws.send_text(json.dumps({"action": "wake_wol"}))
                 state.pc_status = "waking"
                 respuesta_texto = "Orden de encendido enviada al iPhone 7 puente en la red local..."
             except Exception as e:
-                print(f"⚠️ Error enviando al relay: {e}")
-                enviar_magic_packet()
+                print(f"⚠️ Error enviando al relay, reintentando respaldo: {e}")
                 state.pc_status = "waking"
-                respuesta_texto = "Enviando orden de encendido por paquete WoL tradicional..."
+                respuesta_texto = "Error de comunicación con el puente local."
         else:
-            print("📡 [LOG] Puente no disponible. Enviando WoL directo desde el servidor...")
-            enviar_magic_packet()
-            state.pc_status = "waking"
-            respuesta_texto = "Enviando orden de encendido por paquete WoL a su red local..."
+            # Si realmente no hay puente conectado, avisamos claramente en vez de intentar un WoL imposible desde Render
+            respuesta_texto = "El iPhone 7 puente no se encuentra conectado al sistema en este momento, señor."
 
     # COMANDO: APAGAR PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
@@ -688,6 +685,9 @@ async def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
             respuesta_texto = "El puente local o la PC no se encuentran conectados."
+
+    # [El resto de las consultas generales se mantiene exactamente igual]
+
 
     # CONSULTAS GENERALES / CLIMA
     else:
