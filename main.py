@@ -77,29 +77,22 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini 3.6 Flash con el nuevo SDK google-genai."""
+    """Genera la respuesta usando Gemini 3.6 Flash evitando el conflicto con Google Credentials."""
     try:
-        # Extraer la API Key y limpiar cualquier caracter/espacio/comilla
-        raw_key = os.environ.get("GEMINI_API_KEY", "")
-        api_key = raw_key.strip().strip('"').strip("'")
-
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+        
         if not api_key:
-            print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
+            print("⚠️ GEMINI_API_KEY no encontrada.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Instanciar el cliente pasando explícitamente la clave limpia
+        # Instanciación explícita deshabilitando el fallback a OAuth/Service Account
         client = genai.Client(api_key=api_key)
-
-        system_instruction = (
-            "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
-            "Responde de manera concisa y clara."
-        )
 
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
             config=types.GenerateContentConfig(
-                system_instruction=system_instruction
+                system_instruction="Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Responde de manera concisa y clara."
             )
         )
         return response.text
