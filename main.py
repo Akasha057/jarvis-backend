@@ -77,20 +77,15 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini 3.6 Flash evitando el conflicto con Google Credentials."""
-    # 1. Quitar del proceso las variables que activan la autenticación por Service Account/OAuth
-    env_service_json = os.environ.pop("GOOGLE_CREDENTIALS_JSON", None)
-    env_gac = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-
+    """Genera la respuesta usando Gemini 3.6 Flash forzando el cliente API Key."""
     try:
-        # 2. Obtener la API Key limpia
         api_key = os.environ.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
         
         if not api_key:
             print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # 3. Instanciar el cliente de google-genai con la API Key
+        # Instanciar el cliente indicando explícitamente la API Key
         client = genai.Client(api_key=api_key)
 
         system_instruction = (
@@ -99,7 +94,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         )
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.6-flash",  # O el modelo alias correspondiente
             contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction
@@ -110,13 +105,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     except Exception as e:
         print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
-
-    finally:
-        # 4. Restaurar las variables en el entorno para otros módulos que las necesiten
-        if env_service_json:
-            os.environ["GOOGLE_CREDENTIALS_JSON"] = env_service_json
-        if env_gac:
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = env_gac
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
