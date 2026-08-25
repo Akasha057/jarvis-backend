@@ -6,7 +6,10 @@ import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import google.generativeai as genai
+
+# Importación del nuevo SDK oficial
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------
 # CONFIGURACIÓN SECRETA DESDE RENDER ENVIRONMENT
@@ -16,13 +19,8 @@ DUCKDNS_TOKEN = os.environ.get("DUCKDNS_TOKEN", "")
 TARGET_MAC = os.environ.get("TARGET_MAC", "")
 WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
-
-# Configurar cliente de Google Gemini
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -52,7 +50,6 @@ def enviar_magic_packet():
         print("⚠️ Faltan credenciales o la MAC en las variables de entorno.")
         return
 
-    # 1. Actualizar IP pública en DuckDNS
     try:
         requests.get(
             f"https://www.duckdns.org/update?domains={DUCKDNS_DOMAIN}&token={DUCKDNS_TOKEN}",
@@ -62,7 +59,6 @@ def enviar_magic_packet():
     except Exception as e:
         print(f"⚠️ Error actualizando DuckDNS: {e}")
 
-    # 2. Construir y enviar el Magic Packet por UDP
     try:
         mac_limpia = TARGET_MAC.replace(":", "").replace("-", "")
         if len(mac_limpia) != 12:
@@ -81,29 +77,34 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini Flash."""
+    """Genera la respuesta usando Gemini Flash con el nuevo SDK google-genai."""
     try:
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
-            print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
+            print("⚠️ GEMINI_API_KEY no encontrada.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Re-configurar la API key explícitamente antes de instanciar el modelo
-        genai.configure(api_key=api_key)
+        # Inicialización del cliente con el nuevo SDK
+        client = genai.Client(api_key=api_key)
 
-        model = genai.GenerativeModel("gemini-3.6-flash")
-        
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
             "Responde de manera concisa y clara."
         )
-        response = model.generate_content(
-            f"{system_instruction}\n\nCliente IP: {client_ip}\nUsuario: {prompt}"
+
+        # Generación de contenido manteniendo el modelo especificado
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
         )
         return response.text
     except Exception as e:
         print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
+
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
@@ -150,7 +151,6 @@ def read_root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. Control System</title>
 
-        <!-- Google Fonts: Orbitron y Rajdhani -->
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;700&display=swap" rel="stylesheet">
@@ -528,12 +528,11 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general
+    # Conversación general con Gemini
     else:
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
 
-    # Convertir respuesta a audio y codificar en base64 para el reproductor web
     audio_bytes = texto_a_voz_elevenlabs(respuesta_texto)
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
 
