@@ -103,8 +103,8 @@ def enviar_magic_packet():
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """
-    Intenta generar la respuesta usando gemini-3.7-flash probando la lista de API Keys una por una.
-    Si una clave falla (ej. error 401 o límite de uso), conmuta automáticamente a la siguiente.
+    Intenta generar la respuesta usando gemini-3.7-flash probando las API Keys una por una.
+    Conmuta automáticamente si una clave falla o devuelve una respuesta vacía.
     """
     global key_index
     keys = obtener_lista_api_keys()
@@ -126,25 +126,36 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
                 "Responde de manera concisa y clara."
             )
 
-            chat = client.chats.create(
+            # Usamos generate_content directamente para asegurar compatibilidad estricta
+            response = client.models.generate_content(
                 model="gemini-3.7-flash",
+                contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction
                 )
             )
 
-            response = chat.send_message(f"Cliente IP: {client_ip}\nUsuario: {prompt}")
+            # Extracción segura del texto resultante
+            texto_respuesta = getattr(response, "text", None)
             
-            # Avanza el puntero global para equilibrar la carga en las siguientes llamadas
-            key_index = (key_index + intento + 1) % total_keys
-            return response.text
+            if not texto_respuesta and response.candidates:
+                # Intento de extracción por partes en caso de respuestas estructuradas
+                try:
+                    texto_respuesta = response.candidates[0].content.parts[0].text
+                except Exception:
+                    pass
+
+            if texto_respuesta and texto_respuesta.strip():
+                # Éxito: avanzamos la clave para la próxima petición y retornamos
+                key_index = (key_index + intento + 1) % total_keys
+                return texto_respuesta.strip()
+            else:
+                print(f"⚠️ La Key ...{current_key[-6:]} devolvió una respuesta vacía o fue filtrada.")
 
         except Exception as e:
-            print(f"⚠️ Error con la API Key ...{current_key[-6:]} (intento {intento + 1}/{total_keys}): {e}")
-            # Si falla, el bucle for continúa con la siguiente clave
+            print(f"⚠️ Error al llamar a Gemini con Key ...{current_key[-6:]} (intento {intento + 1}/{total_keys}): {e}")
 
-    return "Disculpe, señor. Ocurrió un error en todos los accesos al sistema Gemini."
-
+    return "Disculpe, señor. Ocurrió un error o la respuesta no pudo ser generada por el sistema Gemini."
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
