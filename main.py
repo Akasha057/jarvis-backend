@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import asyncio
+import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response
@@ -94,7 +95,7 @@ def enviar_magic_packet():
         print(f"⚠️ Error enviando Magic Packet: {e}")
 
 
-def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
+def _llamar_gemini_sync(key: str, prompt_con_contexto: str, modelo: str) -> str | None:
     """Llamada HTTP REST directa a Gemini."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={key}"
     
@@ -106,7 +107,7 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
         "system_instruction": {
             "parts": [
                 {
-                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Responde de manera concisa y clara."
+                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Tienes acceso a la hora y el clima actual del usuario en tiempo real mediante el contexto provisto. Responde de manera concisa y clara."
                 }
             ]
         },
@@ -114,7 +115,7 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
             {
                 "parts": [
                     {
-                        "text": f"Cliente IP: {client_ip}\nUsuario: {prompt}"
+                        "text": prompt_con_contexto
                     }
                 ]
             }
@@ -137,7 +138,7 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
     return None
 
 
-def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
+def generar_respuesta_con_flash(prompt_con_contexto: str) -> str:
     """Intenta generar respuesta rotando claves usando únicamente gemini-3.6-flash vía HTTP directo."""
     global key_index
     keys = obtener_lista_api_keys()
@@ -152,7 +153,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         current_key = keys[(key_index + intento) % total_keys]
         
         try:
-            future = executor.submit(_llamar_gemini_sync, current_key, prompt, client_ip, modelo_unico)
+            future = executor.submit(_llamar_gemini_sync, current_key, prompt_con_contexto, modelo_unico)
             resultado = future.result(timeout=8)
 
             if resultado:
@@ -214,7 +215,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con sondeo de estado, visor web de TeamViewer y botones de audio por mensaje."""
+    """Retorna la interfaz web de JARVIS con detección automática de ubicación horaria y climática."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -321,9 +322,7 @@ def read_root():
             .chat-log::-webkit-scrollbar { width: 6px; }
             .chat-log::-webkit-scrollbar-thumb { background: var(--cyan-dim); border-radius: 3px; }
             
-            .msg-container {
-                display: flex; flex-direction: column; max-width: 80%;
-            }
+            .msg-container { display: flex; flex-direction: column; max-width: 80%; }
             .msg-container.user { align-self: flex-end; align-items: flex-end; }
             .msg-container.jarvis { align-self: flex-start; align-items: flex-start; }
 
@@ -331,9 +330,7 @@ def read_root():
             .msg.user { background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: #ffffff; }
             .msg.jarvis { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); color: #e0f7fc; }
 
-            .audio-toolbar {
-                display: flex; gap: 6px; margin-top: 5px;
-            }
+            .audio-toolbar { display: flex; gap: 6px; margin-top: 5px; }
             .btn-audio-action {
                 background: rgba(0, 240, 255, 0.1);
                 border: 1px solid var(--cyan-dim);
@@ -457,18 +454,15 @@ def read_root():
                 msgDiv.innerText = texto;
                 containerDiv.appendChild(msgDiv);
 
-                // Si el mensaje es de JARVIS y contiene audio sintetizado, agregamos la barra de herramientas de audio
                 if (sender === "jarvis" && audioBase64) {
                     const toolbar = document.createElement("div");
                     toolbar.className = "audio-toolbar";
 
-                    // Botón para reproducir audio individualmente
                     const btnPlay = document.createElement("button");
                     btnPlay.className = "btn-audio-action";
                     btnPlay.innerHTML = "▶ Reproducir";
                     btnPlay.onclick = () => reproducirAudioBase64(audioBase64);
 
-                    // Botón para descargar el audio en formato MP3
                     const btnDownload = document.createElement("button");
                     btnDownload.className = "btn-audio-action";
                     btnDownload.innerHTML = "💾 Descargar";
@@ -508,17 +502,22 @@ def read_root():
                 agregarMensaje(text, "user");
                 userInput.value = "";
 
+                // Obtenemos la hora local del navegador del cliente
+                const localTimeStr = new Date().toLocaleString('es-AR', { hour12: false });
+
                 try {
                     const response = await fetch("/procesar", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ text: text })
+                        body: JSON.stringify({ 
+                            text: text,
+                            local_time: localTimeStr 
+                        })
                     });
 
                     const data = await response.json();
                     if (data.respuesta) { 
                         agregarMensaje(data.respuesta, "jarvis", data.audio_b64); 
-                        // Reproducción automática global al recibir la respuesta
                         if (data.audio_b64) {
                             reproducirAudioBase64(data.audio_b64);
                         }
@@ -536,9 +535,15 @@ def read_root():
     return HTMLResponse(content=html_content)
 
 
+class PromptRequest(BaseModel):
+    text: str
+    local_time: str | None = None
+
+
 @app.post("/procesar")
 def procesar(payload: PromptRequest, request: Request):
     user_text = payload.text
+    local_time = payload.local_time or datetime.datetime.now().strftime("%H:%M:%S")
     texto_lower = user_text.lower()
     respuesta_texto = ""
 
@@ -574,8 +579,44 @@ def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
     else:
+        # Detectamos la ubicación del usuario consultando su IP pública mediante un servicio gratuito
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
-        respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
+        
+        ubicacion_detectada = "Desconocida"
+        clima_detectado = "No disponible"
+        
+        try:
+            # Geolocalización rápida por IP
+            geo_res = requests.get(f"http://ip-api.com/json/{client_ip}?fields=city,region,country", timeout=2)
+            if geo_res.status_code == 200:
+                geo_data = geo_res.json()
+                ciudad = geo_data.get("city")
+                region = geo_data.get("region")
+                if ciudad:
+                    ubicacion_detectada = f"{ciudad}, {region}"
+        except Exception:
+            pass
+
+        try:
+            # Si detectamos una ciudad, consultamos el clima actual de esa misma ciudad
+            if ubicacion_detectada != "Desconocida":
+                ciudad_query = ubicacion_detectada.split(",")[0].replace(" ", "+")
+                clima_res = requests.get(f"https://wttr.in/{ciudad_query}?format=%C+%t", timeout=2)
+                if clima_res.status_code == 200:
+                    clima_detectado = clima_res.text.strip()
+        except Exception:
+            pass
+
+        # Construimos el bloque de contexto exacto para Gemini
+        prompt_con_contexto = (
+            f"[Contexto del Sistema en Tiempo Real]\n"
+            f"- Hora local del usuario: {local_time}\n"
+            f"- Ubicación aproximada detectada: {ubicacion_detectada}\n"
+            f"- Clima actual en la ubicación: {clima_detectado}\n\n"
+            f"Mensaje del usuario: {user_text}"
+        )
+
+        respuesta_texto = generar_respuesta_con_flash(prompt_con_contexto)
 
     audio_bytes = texto_a_voz_elevenlabs(respuesta_texto)
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
