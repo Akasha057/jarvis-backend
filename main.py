@@ -109,7 +109,6 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
         "Responde de manera concisa y clara."
     )
 
-    # Se agrega tools=[] para suprimir advertencias de AFC (Automatic Function Calling)
     response = client.models.generate_content(
         model=modelo,
         contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
@@ -125,7 +124,7 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Intenta generar respuesta rotando claves de API Keys y modelos."""
+    """Intenta generar respuesta rotando claves de API Keys y modelos compatibles (3.7 y 3.6)."""
     global key_index
     keys = obtener_lista_api_keys()
     
@@ -134,7 +133,8 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
-    modelos_a_probar = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    # Modelos estrictamente configurados para versiones 3.7 y 3.6 Flash
+    modelos_a_probar = ["gemini-3.7-flash", "gemini-3.6-flash"]
 
     for intento in range(total_keys):
         current_key = keys[(key_index + intento) % total_keys]
@@ -152,7 +152,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
                 print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo}")
             except Exception as e:
                 print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo}: {e}")
-                # Si la credencial no es válida (401), se salta inmediatamente a la siguiente Key
+                # Si la clave no está autenticada (401), se omite inmediatamente la iteración para esta clave
                 if "401" in str(e) or "UNAUTHENTICATED" in str(e):
                     break
 
