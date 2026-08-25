@@ -83,7 +83,14 @@ def enviar_magic_packet():
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """Genera la respuesta usando Gemini Flash."""
     try:
-        model = genai.GenerativeModel("gemini-3.6-flash")
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return "Error: GEMINI_API_KEY no está configurada en las variables de entorno."
+
+        # Configuración directa previa a la llamada
+        genai.configure(api_key=api_key)
+
+        model = genai.GenerativeModel("gemini-2.0-flash") # Asegúrate de usar un modelo soportado (ej. gemini-2.0-flash)
         
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
@@ -96,7 +103,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     except Exception as e:
         print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
-
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
