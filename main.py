@@ -26,13 +26,13 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 # ---------------------------------------------------------
 # SISTEMA DE ROTACIÓN DE API KEYS (10 KEYS)
 # ---------------------------------------------------------
-# Lee la variable que contiene las 10 claves separadas por coma
+# Lee la variable GEMINI_API_KEY que contiene las 10 claves separadas por comas
 raw_keys_env = os.environ.get("GEMINI_API_KEY", "")
 
-# Limpia y convierte la cadena en una lista de claves individuales
+# Limpia espacios, saltos de línea y comillas de cada clave
 API_KEYS_LIST = [k.strip().strip('"').strip("'") for k in raw_keys_env.split(",") if k.strip()]
 
-# Iterador cíclico para alternar de clave en cada petición
+# Iterador cíclico infinito para alternar entre las 10 claves
 key_cycle = itertools.cycle(API_KEYS_LIST) if API_KEYS_LIST else None
 
 
@@ -99,8 +99,7 @@ def enviar_magic_packet():
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """
-    Genera la respuesta usando gemini-3.6-flash rotando individualmente 
-    entre las 10 API Keys configuradas.
+    Genera la respuesta usando gemini-3.6-flash rotando entre las 10 API Keys (formato AQ).
     """
     current_key = obtener_siguiente_api_key()
     
@@ -109,7 +108,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas."
 
     try:
-        # Inicializa el cliente con la clave individual del turno actual
+        # Configuración del cliente asegurando el paso explícito de la API Key
         client = genai.Client(api_key=current_key)
 
         system_instruction = (
@@ -128,7 +127,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return response.text
 
     except Exception as e:
-        print(f"⚠️ Error al llamar a Gemini Flash (Key finalizada en ...{current_key[-6:]}): {e}")
+        print(f"⚠️ Error al llamar a Gemini 3.6 Flash (Key finalizada en ...{current_key[-6:]}): {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
 
 
