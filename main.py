@@ -102,10 +102,7 @@ def enviar_magic_packet():
 def _llamar_gemini_sync(key: str, prompt_con_contexto: str, modelo: str) -> str | None:
     """Llamada HTTP REST directa a Gemini."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={key}"
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
     
     payload = {
         "system_instruction": {
@@ -148,7 +145,7 @@ def generar_respuesta_con_flash(prompt_con_contexto: str) -> str:
     keys = obtener_lista_api_keys()
     
     if not keys:
-        return "Disculpe, señor. Las claves de API de Gemini não están configuradas en Render."
+        return "Disculpe, señor. Las claves de API de Gemini não estão configuradas en Render."
 
     total_keys = len(keys)
     modelo_unico = "gemini-3.6-flash"
@@ -219,7 +216,7 @@ def obtener_estado():
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    """Retorna la interfaz web de JARVIS con geolocalización GPS por navegador."""
+    """Retorna la interfaz web de JARVIS con geolocalización GPS y control de puente local seguro."""
     html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -293,7 +290,7 @@ def read_root():
             .status-waking { color: #ffaa00; border-color: #ffaa00; }
             .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
             
-            .remote-access-bar { margin: 10px 0; }
+            .remote-access-bar { margin: 10px 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
             .btn-remote {
                 background: rgba(37, 99, 235, 0.2);
                 border-color: #2563eb;
@@ -305,6 +302,7 @@ def read_root():
                 font-family: 'Orbitron', sans-serif;
                 font-size: 0.85rem;
                 font-weight: 600;
+                cursor: pointer;
                 transition: all 0.2s;
             }
             .btn-remote:hover {
@@ -378,7 +376,9 @@ def read_root():
             </div>
             <div>PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span></div>
             <div class="remote-access-bar">
-                <a href="https://start.teamviewer.com" class="btn-remote" target="_blank">🖥️ ABRIR TEAMVIEWER WEB</a>
+                <a href="https://start.teamviewer.com" class="btn-remote" target="_blank">🖥️ TEAMVIEWER WEB</a>
+                <span class="btn-remote" style="background: rgba(16, 185, 129, 0.2); border-color: #10b981; color: #34d399;" id="bridgeStatus">📱 PUENTE: DESCONECTADO</span>
+                <button class="btn-remote" style="background: rgba(245, 158, 11, 0.2); border-color: #f59e0b; color: #fbbf24;" onclick="cambiarIpLocal()">⚙️ CONFIG. IP</button>
             </div>
         </header>
 
@@ -408,21 +408,83 @@ def read_root():
             const statusBadge = document.getElementById("statusBadge");
             const arcReactor = document.getElementById("arcReactor");
             const btnMic = document.getElementById("btnMic");
+            const bridgeStatus = document.getElementById("bridgeStatus");
 
-            // Solicitar geolocalización GPS al navegador de forma automática al cargar
+            // --- GESTIÓN PRIVADA Y SEGURA DE LA IP LOCAL EN EL DISPOSITIVO ---
+            let localPcIp = localStorage.getItem("jarvis_local_pc_ip");
+
+            function cambiarIpLocal() {
+                const nuevaIp = prompt("Ingrese la IP local privada de su PC (ej: 192.168.1.37):", localPcIp || "");
+                if (nuevaIp && nuevaIp.trim() !== "") {
+                    localPcIp = nuevaIp.trim();
+                    localStorage.setItem("jarvis_local_pc_ip", localPcIp);
+                    alert("IP local actualizada de forma segura en este dispositivo: " + localPcIp);
+                }
+            }
+
+            // Si es la primera vez que se abre en este dispositivo (ej. iPhone 7), la solicita discretamente
+            if (!localPcIp) {
+                setTimeout(() => { cambiarIpLocal(); }, 1000);
+            }
+            // -----------------------------------------------------------------
+
+            // Geolocalización GPS del navegador
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
                         userLat = position.coords.latitude;
                         userLon = position.coords.longitude;
-                        console.log("📍 Ubicación GPS precisa obtenida:", userLat, userLon);
                     },
-                    (error) => {
-                        console.log("⚠️ Geolocalización denegada o no disponible, usando fallback por IP.");
-                    },
+                    (error) => { console.log("Ubicación GPS por IP fallback."); },
                     { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
                 );
             }
+
+            // --- CONEXIÓN WEBSOCKET DE RELAY PARA EL PUENTE LOCAL ---
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const relayWsUrl = `${protocol}//${window.location.host}/ws/relay`;
+            const relaySocket = new WebSocket(relayWsUrl);
+
+            relaySocket.onopen = function() {
+                console.log("Nodo puente conectado al relay.");
+                bridgeStatus.innerText = "📱 PUENTE: ACTIVO";
+                bridgeStatus.style.background = "rgba(16, 185, 129, 0.3)";
+            };
+
+            relaySocket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log("Orden de red local recibida:", data);
+
+                    if (!localPcIp) {
+                        console.error("No hay IP local configurada en este dispositivo puente.");
+                        alert("Configure la IP local de la PC usando el botón '⚙️ CONFIG. IP'.");
+                        return;
+                    }
+
+                    if (data.action === "shutdown_pc") {
+                        // Envía comando de apagado local utilizando la IP almacenada de forma privada
+                        fetch(`http://${localPcIp}/api/shutdown`, { method: "POST", mode: "no-cors" })
+                            .then(() => console.log("Orden de apagado local disparada."))
+                            .catch(err => console.error("Error al disparar apagado local:", err));
+                    } 
+                    else if (data.action === "wake_wol") {
+                        // Envía comando de encendido WoL local
+                        fetch(`http://${localPcIp}/api/wol`, { method: "POST", mode: "no-cors" })
+                            .then(() => console.log("Señal WoL local disparada."))
+                            .catch(err => console.error("Error al disparar WoL local:", err));
+                    }
+                } catch (e) {
+                    console.error("Error procesando relay:", e);
+                }
+            };
+
+            relaySocket.onclose = function() {
+                bridgeStatus.innerText = "📱 PUENTE: DESCONECTADO";
+                bridgeStatus.style.background = "rgba(239, 68, 68, 0.3)";
+                setTimeout(() => { location.reload(); }, 5000); // Reconexión automática
+            };
+            // --------------------------------------------------------------------------
 
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -457,12 +519,8 @@ def read_root():
                 try {
                     const response = await fetch("/estado");
                     const data = await response.json();
-                    if (data.pc_status) {
-                        actualizarEstadoUI(data.pc_status);
-                    }
-                } catch (err) {
-                    console.log("Error consultando estado");
-                }
+                    if (data.pc_status) { actualizarEstadoUI(data.pc_status); }
+                } catch (err) {}
             }
             setInterval(verificarEstadoPC, 3000);
 
@@ -502,7 +560,7 @@ def read_root():
                 if (!base64Audio) return;
                 const audio = new Audio("data:audio/mp3;base64," + base64Audio);
                 arcReactor.classList.add("speaking");
-                audio.play().catch(e => console.log("Audio play blocked", e));
+                audio.play().catch(e => {});
                 audio.onended = () => arcReactor.classList.remove("speaking");
             }
 
@@ -522,8 +580,6 @@ def read_root():
 
                 agregarMensaje(text, "user");
                 userInput.value = "";
-
-                // Hora local exacta del dispositivo
                 const localTimeStr = new Date().toLocaleString('es-AR', { hour12: false });
 
                 try {
@@ -541,9 +597,7 @@ def read_root():
                     const data = await response.json();
                     if (data.respuesta) { 
                         agregarMensaje(data.respuesta, "jarvis", data.audio_b64); 
-                        if (data.audio_b64) {
-                            reproducirAudioBase64(data.audio_b64);
-                        }
+                        if (data.audio_b64) { reproducirAudioBase64(data.audio_b64); }
                     }
                     if (data.pc_status) { actualizarEstadoUI(data.pc_status); }
 
@@ -559,25 +613,23 @@ def read_root():
 
 
 @app.post("/procesar")
-def procesar(payload: PromptRequest, request: Request):
+async def procesar(payload: PromptRequest, request: Request):
     user_text = payload.text
     local_time = payload.local_time or datetime.datetime.now().strftime("%H:%M:%S")
     texto_lower = user_text.lower()
     respuesta_texto = ""
 
+    # COMANDO: PRENDER PC
     if any(cmd in texto_lower for cmd in ["prende la pc", "encender la pc", "prender la pc", "enciende la pc"]):
         if state.pc_status == "online":
             respuesta_texto = "Señor, la PC ya se encuentra encendida y en línea."
         elif state.relay_ws is not None:
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(state.relay_ws.send_text(json.dumps({"action": "wake_wol"})))
-                loop.close()
+                await state.relay_ws.send_text(json.dumps({"action": "wake_wol"}))
                 state.pc_status = "waking"
-                respuesta_texto = "Orden enviada al iPhone 7 puente. Activando Magic Packet en la red local..."
+                respuesta_texto = "Orden de encendido enviada al iPhone 7 puente en la red local..."
             except Exception as e:
-                print(f"⚠️ Error al comunicar con el relay: {e}")
+                print(f"⚠️ Error enviando al relay: {e}")
                 enviar_magic_packet()
                 state.pc_status = "waking"
                 respuesta_texto = "Enviando orden de encendido por paquete WoL tradicional..."
@@ -586,20 +638,25 @@ def procesar(payload: PromptRequest, request: Request):
             state.pc_status = "waking"
             respuesta_texto = "Enviando orden de encendido por paquete WoL a su red local..."
 
+    # COMANDO: APAGAR PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
-        if state.pc_agent_ws and state.pc_status == "online":
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"})))
-            loop.close()
+        if state.relay_ws is not None:
+            try:
+                await state.relay_ws.send_text(json.dumps({"action": "shutdown_pc"}))
+                respuesta_texto = "Enviando orden de apagado seguro al iPhone 7 puente..."
+            except Exception as e:
+                print(f"⚠️ Error enviando apagado al relay: {e}")
+                respuesta_texto = "Error al comunicar con el puente local."
+        elif state.pc_agent_ws and state.pc_status == "online":
+            await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
-            respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
+            respuesta_texto = "El puente local o la PC no se encuentran conectados."
 
+    # CONSULTAS GENERALES / CLIMA
     else:
         ubicacion_detectada = "Desconocida"
         
-        # 1. Si el navegador envió coordenadas GPS precisas, las convertimos a nombre de localidad real (ej: Billinghurst)
         if payload.lat is not None and payload.lon is not None:
             try:
                 rev_res = requests.get(
@@ -609,15 +666,13 @@ def procesar(payload: PromptRequest, request: Request):
                 )
                 if rev_res.status_code == 200:
                     address = rev_res.json().get("address", {})
-                    # Buscamos pueblo, barrio, ciudad o municipio
                     localidad = address.get("town") or address.get("suburb") or address.get("city") or address.get("village")
                     región = address.get("state")
                     if localidad:
                         ubicacion_detectada = f"{localidad}, {región}" if región else localidad
-            except Exception as e:
-                print(f"⚠️ Error en geolocalización GPS inversa: {e}")
+            except Exception:
+                pass
 
-        # 2. Fallback por IP si el GPS no estuviese disponible
         if ubicacion_detectada == "Desconocida":
             client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
             try:
@@ -631,7 +686,6 @@ def procesar(payload: PromptRequest, request: Request):
             except Exception:
                 pass
 
-        # Detectamos si el usuario especificó otra ciudad explícitamente en el texto
         ciudad_especifica = None
         match = re.search(r'\b(?:en|de|para)\s+([A-ZÁÉÍÓÚ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóúñ]+)*)', user_text)
         if match and any(palabra in texto_lower for palabra in ["clima", "tiempo", "temperatura", "grado", "llueve", "calor", "frio"]):
@@ -649,7 +703,6 @@ def procesar(payload: PromptRequest, request: Request):
         except Exception:
             pass
 
-        # Contexto exacto para Gemini
         prompt_con_contexto = (
             f"[Contexto del Sistema en Tiempo Real]\n"
             f"- Hora local del usuario: {local_time}\n"
@@ -676,12 +729,10 @@ async def websocket_agent(websocket: WebSocket):
     state.pc_agent_ws = websocket
     state.pc_status = "online"
     print("🔌 Agente PC conectado.")
-
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        print("🔌 Agente PC conectado.")
         state.pc_agent_ws = None
         state.pc_status = "offline"
 
@@ -690,11 +741,10 @@ async def websocket_agent(websocket: WebSocket):
 async def websocket_relay(websocket: WebSocket):
     await websocket.accept()
     state.relay_ws = websocket
-    print("📱 iPhone 7 (Puente local WoL) conectado y escuchando.")
-
+    print("📱 iPhone 7 (Puente local) conectado exitosamente.")
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
         print("📱 iPhone 7 desconectado.")
         state.relay_ws = None
