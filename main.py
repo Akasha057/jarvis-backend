@@ -350,7 +350,7 @@ def read_root():
             </div>
             <div>PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span></div>
             <div class="remote-access-bar">
-                <a href="teamviewer://" class="btn-remote" target="_blank">🖥️ ABRIR TEAMVIEWER</a>
+                <a href="https://start.teamviewer.com" class="btn-remote" target="_blank">🖥️ ABRIR TEAMVIEWER WEB</a>
             </div>
         </header>
 
