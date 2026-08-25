@@ -3,18 +3,17 @@ import os
 import socket
 import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 
 # ---------------------------------------------------------
 # CONFIGURACIÓN SECRETA DESDE RENDER ENVIRONMENT
 # ---------------------------------------------------------
-# Se eliminaron todos los datos personales por defecto.
-# Todo debe estar configurado en el panel "Environment" de Render.
 DUCKDNS_DOMAIN = os.environ.get("DUCKDNS_DOMAIN", "")
 DUCKDNS_TOKEN = os.environ.get("DUCKDNS_TOKEN", "")
 TARGET_MAC = os.environ.get("TARGET_MAC", "")
-WOL_PORT = int(os.environ.get("WOL_PORT", "9")) # 9 es el puerto estándar WoL
+WOL_PORT = int(os.environ.get("WOL_PORT", "9"))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -64,7 +63,6 @@ def enviar_magic_packet():
 
     # 2. Construir y enviar el Magic Packet por UDP
     try:
-        # Limpiar la MAC (por si viene con ':' o '-')
         mac_limpia = TARGET_MAC.replace(":", "").replace("-", "")
         if len(mac_limpia) != 12:
             print("⚠️ Formato de MAC incorrecto en las variables de entorno.")
@@ -82,22 +80,20 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini 3.6 Flash."""
+    """Genera la respuesta usando Gemini Flash."""
     try:
-        # Aquí se especifica la versión exacta que solicitaste
-        model = genai.GenerativeModel("gemini-3.6-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         
         system_instruction = (
             "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
             "Responde de manera concisa y clara."
         )
-        # Se estructura el prompt
         response = model.generate_content(
             f"{system_instruction}\n\nCliente IP: {client_ip}\nUsuario: {prompt}"
         )
         return response.text
     except Exception as e:
-        print(f"⚠️ Error al llamar a Gemini 3.6 Flash: {e}")
+        print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
 
 
@@ -133,15 +129,370 @@ def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     return None
 
 # ---------------------------------------------------------
-# ENDPOINTS
+# ENDPOINTS Y ENTORNO WEB
 # ---------------------------------------------------------
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def read_root():
-    return {
-        "status": "online",
-        "service": "JARVIS Cloud Backend",
-        "pc_status": state.pc_status
-    }
+    """Retorna la interfaz web de JARVIS."""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>J.A.R.V.I.S. Control System</title>
+
+        <!-- Google Fonts: Orbitron y Rajdhani para estética Futuristic/HUD -->
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;700&display=swap" rel="stylesheet">
+
+        <style>
+            :root {
+                --cyan-glow: #00f0ff;
+                --cyan-dim: #008b9b;
+                --bg-dark: #050a14;
+                --panel-bg: rgba(8, 20, 38, 0.7);
+                --border-color: rgba(0, 240, 255, 0.3);
+            }
+
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                background-color: var(--bg-dark);
+                color: #e0f7fc;
+                font-family: 'Rajdhani', sans-serif;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: flex-start;
+                padding: 20px;
+                background-image: 
+                    radial-gradient(circle at 50% 30%, rgba(0, 240, 255, 0.05) 0%, transparent 70%),
+                    linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+                background-size: 100% 100%, 30px 30px, 30px 30px;
+            }
+
+            header {
+                text-align: center;
+                margin-bottom: 20px;
+                width: 100%;
+                max-width: 800px;
+            }
+
+            h1 {
+                font-family: 'Orbitron', sans-serif;
+                font-size: 2.2rem;
+                letter-spacing: 4px;
+                color: var(--cyan-glow);
+                text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+            }
+
+            /* Contenedor Arc Reactor */
+            .arc-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                margin: 15px 0;
+            }
+
+            .arc-reactor {
+                position: relative;
+                width: 120px;
+                height: 120px;
+                border-radius: 50%;
+                border: 2px solid var(--border-color);
+                box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+
+            .core {
+                width: 50px;
+                height: 50px;
+                border-radius: 50%;
+                background: radial-gradient(circle, #ffffff 0%, var(--cyan-glow) 60%, var(--cyan-dim) 100%);
+                box-shadow: 0 0 25px var(--cyan-glow), 0 0 50px var(--cyan-glow);
+                transition: all 0.3s ease;
+            }
+
+            .arc-reactor.speaking .core {
+                animation: pulse-speaking 0.8s infinite alternate;
+            }
+
+            @keyframes pulse-speaking {
+                0% { transform: scale(0.9); box-shadow: 0 0 15px var(--cyan-glow); }
+                100% { transform: scale(1.25); box-shadow: 0 0 40px var(--cyan-glow), 0 0 70px var(--cyan-glow); }
+            }
+
+            /* Indicador de Estado */
+            .status-badge {
+                display: inline-block;
+                padding: 6px 16px;
+                border-radius: 20px;
+                font-family: 'Orbitron', sans-serif;
+                font-size: 0.85rem;
+                letter-spacing: 1px;
+                border: 1px solid var(--border-color);
+                background: rgba(0, 0, 0, 0.4);
+                margin-top: 10px;
+            }
+
+            .status-offline { color: #ff4d4d; border-color: #ff4d4d; }
+            .status-waking { color: #ffaa00; border-color: #ffaa00; }
+            .status-online { color: #00ff66; border-color: #00ff66; box-shadow: 0 0 10px rgba(0, 255, 102, 0.3); }
+
+            /* Panel Principal */
+            .main-panel {
+                width: 100%;
+                max-width: 800px;
+                background: var(--panel-bg);
+                border: 1px solid var(--border-color);
+                box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+                backdrop-filter: blur(8px);
+                border-radius: 8px;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                height: 500px;
+            }
+
+            /* Chat Log */
+            .chat-log {
+                flex: 1;
+                overflow-y: auto;
+                padding-right: 10px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                margin-bottom: 15px;
+            }
+
+            .chat-log::-webkit-scrollbar {
+                width: 6px;
+            }
+            .chat-log::-webkit-scrollbar-thumb {
+                background: var(--cyan-dim);
+                border-radius: 3px;
+            }
+
+            .msg {
+                max-width: 80%;
+                padding: 10px 14px;
+                border-radius: 6px;
+                font-size: 1.05rem;
+                line-height: 1.4;
+            }
+
+            .msg.user {
+                align-self: flex-end;
+                background: rgba(0, 240, 255, 0.15);
+                border: 1px solid rgba(0, 240, 255, 0.4);
+                color: #ffffff;
+            }
+
+            .msg.jarvis {
+                align-self: flex-start;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                color: #e0f7fc;
+            }
+
+            /* Controls */
+            .controls {
+                display: flex;
+                gap: 10px;
+            }
+
+            input[type="text"] {
+                flex: 1;
+                background: rgba(0, 0, 0, 0.5);
+                border: 1px solid var(--border-color);
+                padding: 12px 16px;
+                border-radius: 4px;
+                color: #fff;
+                font-family: 'Rajdhani', sans-serif;
+                font-size: 1.1rem;
+                outline: none;
+            }
+
+            input[type="text"]:focus {
+                border-color: var(--cyan-glow);
+                box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+            }
+
+            button {
+                background: rgba(0, 240, 255, 0.1);
+                border: 1px solid var(--cyan-glow);
+                color: var(--cyan-glow);
+                font-family: 'Orbitron', sans-serif;
+                padding: 0 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                transition: all 0.2s;
+                font-weight: 600;
+            }
+
+            button:hover {
+                background: var(--cyan-glow);
+                color: #000;
+                box-shadow: 0 0 12px var(--cyan-glow);
+            }
+
+            .btn-mic {
+                padding: 0 15px;
+            }
+
+            .btn-mic.recording {
+                background: #ff4d4d;
+                border-color: #ff4d4d;
+                color: #fff;
+                animation: pulse-red 1s infinite alternate;
+            }
+
+            @keyframes pulse-red {
+                0% { box-shadow: 0 0 5px #ff4d4d; }
+                100% { box-shadow: 0 0 15px #ff4d4d; }
+            }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <h1>J.A.R.V.I.S.</h1>
+            <div class="arc-container">
+                <div class="arc-reactor" id="arcReactor">
+                    <div class="core"></div>
+                </div>
+            </div>
+            <div>
+                PC STATUS: <span id="statusBadge" class="status-badge status-offline">OFFLINE</span>
+            </div>
+        </header>
+
+        <main class="main-panel">
+            <div class="chat-log" id="chatLog">
+                <div class="msg jarvis">Sistemas en línea, señor. ¿En qué puedo ayudarle hoy?</div>
+            </div>
+
+            <div class="controls">
+                <input type="text" id="userInput" placeholder="Escriba un comando o pregunta..." onkeydown="if(event.key==='Enter') enviarMensaje()" />
+                <button class="btn-mic" id="btnMic" onclick="toggleMic()">🎙️</button>
+                <button onclick="enviarMensaje()">ENVIAR</button>
+            </div>
+        </main>
+
+        <script>
+            let pcStatus = "offline";
+            let recognition = null;
+            let isRecording = false;
+
+            const chatLog = document.getElementById("chatLog");
+            const userInput = document.getElementById("userInput");
+            const statusBadge = document.getElementById("statusBadge");
+            const arcReactor = document.getElementById("arcReactor");
+            const btnMic = document.getElementById("btnMic");
+
+            // Configuración de Reconocimiento de Voz (Web Speech API)
+            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                recognition = new SpeechRecognition();
+                recognition.lang = 'es-ES';
+                recognition.continuous = false;
+                recognition.interimResults = false;
+
+                recognition.onresult = (event) => {
+                    const text = event.results[0][0].transcript;
+                    userInput.value = text;
+                    enviarMensaje();
+                };
+
+                recognition.onend = () => {
+                    isRecording = false;
+                    btnMic.classList.remove("recording");
+                };
+
+                recognition.onerror = () => {
+                    isRecording = false;
+                    btnMic.classList.remove("recording");
+                };
+            } else {
+                btnMic.style.display = "none";
+            }
+
+            function toggleMic() {
+                if (!recognition) return;
+                if (isRecording) {
+                    recognition.stop();
+                } else {
+                    recognition.start();
+                    isRecording = true;
+                    btnMic.classList.add("recording");
+                }
+            }
+
+            function actualizarEstadoUI(status) {
+                pcStatus = status;
+                statusBadge.className = "status-badge status-" + status;
+                statusBadge.innerText = status.toUpperCase();
+            }
+
+            function agregarMensaje(texto, sender) {
+                const msgDiv = document.createElement("div");
+                msgDiv.className = "msg " + sender;
+                msgDiv.innerText = texto;
+                chatLog.appendChild(msgDiv);
+                chatLog.scrollTop = chatLog.scrollHeight;
+            }
+
+            async function enviarMensaje() {
+                const text = userInput.value.trim();
+                if (!text) return;
+
+                agregarMensaje(text, "user");
+                userInput.value = "";
+
+                try {
+                    const response = await fetch("/procesar", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ text: text })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.respuesta) {
+                        agregarMensaje(data.respuesta, "jarvis");
+                    }
+
+                    if (data.pc_status) {
+                        actualizarEstadoUI(data.pc_status);
+                    }
+
+                } catch (err) {
+                    agregarMensaje("Error al conectar con el servidor de JARVIS.", "jarvis");
+                }
+            }
+
+            // Consultar el estado inicial al cargar
+            fetch("/")
+                .then(res => res.json())
+                .then(data => {
+                    if (data.pc_status) actualizarEstadoUI(data.pc_status);
+                })
+                .catch(() => {});
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @app.post("/procesar")
@@ -167,13 +518,12 @@ async def procesar(payload: PromptRequest, request: Request):
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
 
-    # Conversación general con Gemini 3.6 Flash
+    # Conversación general con Gemini Flash
     else:
-        # Intentamos obtener la IP del cliente (útil para el prompt)
         client_ip = request.headers.get("x-forwarded-for", request.client.host).split(",")[0].strip()
         respuesta_texto = generar_respuesta_con_flash(user_text, client_ip)
 
-    # Convertir respuesta a audio 
+    # Convertir respuesta a audio (opcional)
     audio_bytes = texto_a_voz_elevenlabs(respuesta_texto)
 
     return {
