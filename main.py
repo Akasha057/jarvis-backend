@@ -98,11 +98,12 @@ def enviar_magic_packet():
 
 
 def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
-    """Llamada síncrona aislada utilizando únicamente el modelo indicado y desactivando el warning de AFC."""
-    client = genai.Client(
-        api_key=key,
-        http_options=types.HttpOptions(api_version="v1beta")
-    )
+    """Llamada síncrona pasando la API Key de forma limpia mediante variable de entorno para evitar el error 401."""
+    # Seteamos temporalmente la key en el entorno del thread para que el cliente la tome de forma nativa
+    os.environ["GEMINI_API_KEY"] = key
+    
+    # Se instancia el cliente sin opciones extras de HTTP para evitar que fuerce encabezados OAuth Bearer
+    client = genai.Client(api_key=key)
 
     system_instruction = (
         "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
@@ -134,7 +135,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
-    # Modelo único especificado
     modelo_unico = "gemini-3.6-flash"
 
     for intento in range(total_keys):
@@ -152,7 +152,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
             print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo_unico}")
         except Exception as e:
             print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo_unico}: {e}")
-            # Si la clave es inválida (401), salta inmediatamente a la siguiente key
             if "401" in str(e) or "UNAUTHENTICATED" in str(e):
                 continue
 
