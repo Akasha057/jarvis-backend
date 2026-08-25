@@ -5,7 +5,7 @@ import socket
 import asyncio
 import requests
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -109,11 +109,13 @@ def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> s
         "Responde de manera concisa y clara."
     )
 
+    # Se agrega tools=[] para suprimir advertencias de AFC (Automatic Function Calling)
     response = client.models.generate_content(
         model=modelo,
         contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
         config=types.GenerateContentConfig(
-            system_instruction=system_instruction
+            system_instruction=system_instruction,
+            tools=[]
         )
     )
 
@@ -132,14 +134,13 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
         return "Disculpe, señor. Las claves de API de Gemini no están configuradas en Render."
 
     total_keys = len(keys)
-    modelos_a_probar = ["gemini-3.7-flash", "gemini-3.6-flash"]
+    modelos_a_probar = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
     for intento in range(total_keys):
         current_key = keys[(key_index + intento) % total_keys]
         
         for modelo in modelos_a_probar:
             try:
-                # Ejecuta la llamada en un hilo secundario con timeout de 8 segundos por intento
                 future = executor.submit(_llamar_gemini_sync, current_key, prompt, client_ip, modelo)
                 resultado = future.result(timeout=8)
 
@@ -151,6 +152,9 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
                 print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo}")
             except Exception as e:
                 print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo}: {e}")
+                # Si la credencial no es válida (401), se salta inmediatamente a la siguiente Key
+                if "401" in str(e) or "UNAUTHENTICATED" in str(e):
+                    break
 
     return "Disculpe, señor. Ocurrió un error o tiempo de espera agotado al conectar con el sistema Gemini."
 
@@ -187,6 +191,12 @@ def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
 # ---------------------------------------------------------
 # ENDPOINTS Y ENTORNO WEB
 # ---------------------------------------------------------
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Manejo explícito para evitar 404 en navegadores antiguos."""
+    return Response(status_code=204)
+
+
 @app.get("/", response_class=HTMLResponse)
 def read_root():
     """Retorna la interfaz web de JARVIS."""
@@ -197,6 +207,8 @@ def read_root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>J.A.R.V.I.S. Control System</title>
+        <!-- Favicon SVG dinámico incrustado -->
+        <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23050a14' stroke='%2300f0ff' stroke-width='6'/><circle cx='50' cy='50' r='20' fill='%23ffffff'/><circle cx='50' cy='50' r='20' fill='%2300f0ff' opacity='0.7'/></svg>">
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Rajdhani:wght@400;500;700&display=swap" rel="stylesheet">
@@ -402,7 +414,7 @@ def read_root():
 
 @app.post("/procesar")
 def procesar(payload: PromptRequest, request: Request):
-    """Cambiado a 'def' (síncrono) para ejecutarse en ThreadPool sin bloquear el evento HTTP."""
+    """Ejecución síncrona en ThreadPool para no bloquear la aplicación."""
     user_text = payload.text
     texto_lower = user_text.lower()
     respuesta_texto = ""
@@ -419,7 +431,6 @@ def procesar(payload: PromptRequest, request: Request):
     # Lógica de apagado de PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
         if state.pc_agent_ws and state.pc_status == "online":
-            # Envío asíncrono seguro desde endpoint síncrono
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"})))
