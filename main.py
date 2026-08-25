@@ -9,10 +9,6 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-# Importación del SDK oficial de Google GenAI
-from google import genai
-from google.genai import types
-
 # ---------------------------------------------------------
 # CONFIGURACIÓN SECRETA DESDE RENDER ENVIRONMENT
 # ---------------------------------------------------------
@@ -98,35 +94,51 @@ def enviar_magic_packet():
 
 
 def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
-    """Llamada síncrona pasando la API Key de forma limpia mediante variable de entorno para evitar el error 401."""
-    # Seteamos temporalmente la key en el entorno del thread para que el cliente la tome de forma nativa
-    os.environ["GEMINI_API_KEY"] = key
+    """Llamada HTTP REST directa a Gemini para evitar el envío de Authorization: Bearer por parte del SDK."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={key}"
     
-    # Se instancia el cliente sin opciones extras de HTTP para evitar que fuerce encabezados OAuth Bearer
-    client = genai.Client(api_key=key)
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "system_instruction": {
+            "parts": [
+                {
+                    "text": "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. Responde de manera concisa y clara."
+                }
+            ]
+        },
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": f"Cliente IP: {client_ip}\nUsuario: {prompt}"
+                    }
+                ]
+            }
+        ]
+    }
 
-    system_instruction = (
-        "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
-        "Responde de manera concisa y clara."
-    )
-
-    response = client.models.generate_content(
-        model=modelo,
-        contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            tools=[],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-        )
-    )
-
-    if response and response.text and response.text.strip():
-        return response.text.strip()
+    res = requests.post(url, json=payload, headers=headers, timeout=8)
+    
+    if res.status_code == 200:
+        data = res.json()
+        try:
+            texto = data["candidates"][0]["content"]["parts"][0]["text"]
+            if texto and texto.strip():
+                return texto.strip()
+        except (KeyError, IndexError):
+            return None
+    else:
+        # Lanza excepción para ser capturada por el bloque de rotación de claves
+        raise Exception(f"{res.status_code} {res.text}")
+        
     return None
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Intenta generar respuesta rotando claves usando únicamente gemini-3.6-flash."""
+    """Intenta generar respuesta rotando claves usando únicamente gemini-3.6-flash vía HTTP directo."""
     global key_index
     keys = obtener_lista_api_keys()
     
