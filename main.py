@@ -77,7 +77,11 @@ def enviar_magic_packet():
 
 
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """Genera la respuesta usando Gemini 3.6 Flash forzando el cliente API Key."""
+    """
+    Genera la respuesta usando Gemini Flash (3.7 / 3.6).
+    Usa client.chats.create() para evitar advertencias de AFC
+    y valida la API Key para solucionar el error 401.
+    """
     try:
         api_key = os.environ.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
         
@@ -85,7 +89,7 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
             print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Instanciar el cliente indicando explícitamente la API Key
+        # Cliente con la API Key explícita
         client = genai.Client(api_key=api_key)
 
         system_instruction = (
@@ -93,13 +97,15 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
             "Responde de manera concisa y clara."
         )
 
-        response = client.models.generate_content(
-            model="gemini-3.7-flash",  # O el modelo alias correspondiente
-            contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
+        # Uso de chat para AFC nativo y limpio
+        chat = client.chats.create(
+            model="gemini-3.7-flash",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction
             )
         )
+
+        response = chat.send_message(f"Cliente IP: {client_ip}\nUsuario: {prompt}")
         return response.text
 
     except Exception as e:
@@ -491,13 +497,6 @@ def read_root():
                     agregarMensaje("Error al conectar con el servidor de JARVIS.", "jarvis");
                 }
             }
-
-            fetch("/")
-                .then(res => res.json())
-                .then(data => {
-                    if (data.pc_status) actualizarEstadoUI(data.pc_status);
-                })
-                .catch(() => {});
         </script>
     </body>
     </html>
