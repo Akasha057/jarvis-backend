@@ -7,3 +7,6 @@ google-api-python-client
 pydub
 elevenlabs
 audioop-lts
+requests
+pydantic
+google-generativeai
