@@ -2,7 +2,9 @@ import base64
 import json
 import os
 import socket
+import asyncio
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -25,6 +27,9 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 # Instancia de FastAPI
 app = FastAPI()
 
+# Executor global para evitar congelamiento del Event Loop
+executor = ThreadPoolExecutor(max_workers=5)
+
 # ---------------------------------------------------------
 # ESTADO GLOBAL DE LA APLICACIÓN
 # ---------------------------------------------------------
@@ -34,8 +39,6 @@ class AppState:
         self.pc_agent_ws: WebSocket | None = None
 
 state = AppState()
-
-# Puntero global para rotación de claves
 key_index = 0
 
 # ---------------------------------------------------------
@@ -94,11 +97,33 @@ def enviar_magic_packet():
         print(f"⚠️ Error enviando Magic Packet: {e}")
 
 
+def _llamar_gemini_sync(key: str, prompt: str, client_ip: str, modelo: str) -> str | None:
+    """Llamada síncrona aislada para evitar bloqueos del servidor."""
+    client = genai.Client(
+        api_key=key,
+        http_options=types.HttpOptions(api_version="v1beta")
+    )
+
+    system_instruction = (
+        "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
+        "Responde de manera concisa y clara."
+    )
+
+    response = client.models.generate_content(
+        model=modelo,
+        contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction
+        )
+    )
+
+    if response and response.text and response.text.strip():
+        return response.text.strip()
+    return None
+
+
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
-    """
-    Intenta generar respuesta probando la lista de API Keys una por una.
-    Conmuta a gemini-3.6-flash si gemini-3.7-flash no está habilitado en la clave.
-    """
+    """Intenta generar respuesta rotando claves de API Keys y modelos."""
     global key_index
     keys = obtener_lista_api_keys()
     
@@ -112,45 +137,27 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     for intento in range(total_keys):
         current_key = keys[(key_index + intento) % total_keys]
         
-        try:
-            # Forzamos HttpOptions para asegurar llamada mediante API Key sin colgar el cliente
-            client = genai.Client(
-                api_key=current_key,
-                http_options=types.HttpOptions(api_version="v1beta")
-            )
+        for modelo in modelos_a_probar:
+            try:
+                # Ejecuta la llamada en un hilo secundario con timeout de 8 segundos por intento
+                future = executor.submit(_llamar_gemini_sync, current_key, prompt, client_ip, modelo)
+                resultado = future.result(timeout=8)
 
-            system_instruction = (
-                "Eres JARVIS, una inteligencia artificial sofisticada, formal, eficiente y cortés. "
-                "Responde de manera concisa y clara."
-            )
+                if resultado:
+                    key_index = (key_index + intento + 1) % total_keys
+                    return resultado
 
-            for modelo in modelos_a_probar:
-                try:
-                    response = client.models.generate_content(
-                        model=modelo,
-                        contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction
-                        )
-                    )
+            except TimeoutError:
+                print(f"⚠️ Timeout (8s) alcanzado con la Key ...{current_key[-6:]} y modelo {modelo}")
+            except Exception as e:
+                print(f"⚠️ Error con Key ...{current_key[-6:]} y modelo {modelo}: {e}")
 
-                    if response and response.text and response.text.strip():
-                        key_index = (key_index + intento + 1) % total_keys
-                        return response.text.strip()
-                except Exception as inner_e:
-                    print(f"⚠️ Modelo {modelo} falló con key ...{current_key[-6:]}: {inner_e}")
-                    continue
-
-        except Exception as e:
-            print(f"⚠️ Error inicializando cliente con Key ...{current_key[-6:]}: {e}")
-
-    return "Disculpe, señor. No fue posible establecer comunicación con el núcleo de Gemini."
+    return "Disculpe, señor. Ocurrió un error o tiempo de espera agotado al conectar con el sistema Gemini."
 
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs con timeout estricto."""
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
-        print("⚠️ Credenciales de ElevenLabs no configuradas.")
         return None
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
@@ -169,11 +176,9 @@ def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     }
 
     try:
-        # Timeout de 5s para evitar que bloquee la respuesta en la web si ElevenLabs no responde
-        res = requests.post(url, json=data, headers=headers, timeout=5)
+        res = requests.post(url, json=data, headers=headers, timeout=4)
         if res.status_code == 200:
             return res.content
-        print(f"⚠️ Error ElevenLabs status code: {res.status_code}")
     except Exception as e:
         print(f"⚠️ Error o timeout en ElevenLabs: {e}")
     
@@ -396,7 +401,8 @@ def read_root():
 
 
 @app.post("/procesar")
-async def procesar(payload: PromptRequest, request: Request):
+def procesar(payload: PromptRequest, request: Request):
+    """Cambiado a 'def' (síncrono) para ejecutarse en ThreadPool sin bloquear el evento HTTP."""
     user_text = payload.text
     texto_lower = user_text.lower()
     respuesta_texto = ""
@@ -413,7 +419,11 @@ async def procesar(payload: PromptRequest, request: Request):
     # Lógica de apagado de PC
     elif any(cmd in texto_lower for cmd in ["apaga la pc", "apagar la pc"]):
         if state.pc_agent_ws and state.pc_status == "online":
-            await state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"}))
+            # Envío asíncrono seguro desde endpoint síncrono
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(state.pc_agent_ws.send_text(json.dumps({"action": "shutdown"})))
+            loop.close()
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
             respuesta_texto = "La PC no está conectada o ya se encuentra apagada."
