@@ -24,7 +24,7 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
 # Versión del sistema para el Heartbeat del puente local
-APP_VERSION = "2026.08.25-03"
+APP_VERSION = "2026.08.25-04"
 
 # Instancia de FastAPI
 app = FastAPI()
@@ -496,15 +496,13 @@ def read_root():
 
                     if (data.action === "shutdown_pc") {
                         console.log("🖥️ [LOG] Ejecutando orden de apagado local en la red...");
-                        fetch(`http://${localPcIp}/api/shutdown`, { method: "POST", mode: "no-cors" })
-                            .then(() => console.log("Orden de apagado local disparada."))
-                            .catch(err => console.error("Error al disparar apagado local:", err));
+                        const img = new Image();
+                        img.src = `http://${localPcIp}/api/shutdown?t=` + Date.now();
                     } 
                     else if (data.action === "wake_wol") {
                         console.log("📡 [LOG] ¡Aviso! El puente local disparó la señal de encendido (Wake on LAN) en la red.");
-                        fetch(`http://${localPcIp}/api/wol`, { method: "POST", mode: "no-cors" })
-                            .then(() => console.log("Señal WoL local disparada."))
-                            .catch(err => console.error("Error al disparar WoL local:", err));
+                        const img = new Image();
+                        img.src = `http://${localPcIp}/api/wol?t=` + Date.now();
                     }
                 } catch (e) {
                     console.error("Error procesando relay:", e);
@@ -662,11 +660,9 @@ async def procesar(payload: PromptRequest, request: Request):
                 state.pc_status = "waking"
                 respuesta_texto = "Orden de encendido enviada al iPhone 7 puente en la red local..."
             except Exception as e:
-                print(f"⚠️ Error enviando al relay, reintentando respaldo: {e}")
-                state.pc_status = "waking"
+                print(f"⚠️ Error enviando al relay: {e}")
                 respuesta_texto = "Error de comunicación con el puente local."
         else:
-            # Si realmente no hay puente conectado, avisamos claramente en vez de intentar un WoL imposible desde Render
             respuesta_texto = "El iPhone 7 puente no se encuentra conectado al sistema en este momento, señor."
 
     # COMANDO: APAGAR PC
@@ -685,9 +681,6 @@ async def procesar(payload: PromptRequest, request: Request):
             respuesta_texto = "Enviando orden de apagado seguro a la PC..."
         else:
             respuesta_texto = "El puente local o la PC no se encuentran conectados."
-
-    # [El resto de las consultas generales se mantiene exactamente igual]
-
 
     # CONSULTAS GENERALES / CLIMA
     else:
