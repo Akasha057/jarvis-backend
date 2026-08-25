@@ -79,12 +79,14 @@ def enviar_magic_packet():
 def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     """Genera la respuesta usando Gemini Flash con el nuevo SDK google-genai."""
     try:
+        # 1. Obtener la clave limpiando espacios accidentales
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        
         if not api_key:
-            print("⚠️ GEMINI_API_KEY no encontrada.")
+            print("⚠️ GEMINI_API_KEY no encontrada en las variables de entorno.")
             return "Disculpe, señor. La clave de API de Gemini no está configurada."
 
-        # Inicialización del cliente con el nuevo SDK
+        # 2. Instanciar el cliente pasando la API Key explícitamente
         client = genai.Client(api_key=api_key)
 
         system_instruction = (
@@ -92,7 +94,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
             "Responde de manera concisa y clara."
         )
 
-        # Generación de contenido manteniendo el modelo especificado
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=f"Cliente IP: {client_ip}\nUsuario: {prompt}",
@@ -104,7 +105,6 @@ def generar_respuesta_con_flash(prompt: str, client_ip: str) -> str:
     except Exception as e:
         print(f"⚠️ Error al llamar a Gemini Flash: {e}")
         return "Disculpe, señor. Ocurrió un error al procesar su solicitud con el sistema Gemini."
-
 
 def texto_a_voz_elevenlabs(texto: str) -> bytes | None:
     """Sintetiza texto a voz utilizando ElevenLabs."""
